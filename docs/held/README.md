@@ -35,8 +35,8 @@ pio run -e held_esp32 -t upload
 
 ### First boot
 
-1. The controller opens a WiFi access point **`Held-AP`** (password `wled1234`, WLED's default).
-2. Join it. The captive portal opens WLED's WiFi page. You can either enter your network or keep running as an AP.
+1. The controller opens a WiFi access point **`Held-AP`** (password `heldgently`).
+2. Join it. The captive portal opens the Held UI directly. To join another WiFi network instead, use **Setup → links → WiFi** (`/settings/wifi`).
 3. In **Setup → links → LEDs**, set the LED type (e.g. WS281x), GPIO and LED count for each output. **Each LED output becomes one Held strip** (the `held_esp32` build enables WLED auto-segments: one segment per output).
 4. Open the controller's address (or `http://held.local`) for the Held UI. The stock WLED UI is still available at `/classic` for diagnostics.
 

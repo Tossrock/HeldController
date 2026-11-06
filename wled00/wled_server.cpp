@@ -635,15 +635,16 @@ void initServer()
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (captivePortal(request)) return;
+    #ifdef WLED_ENABLE_HELD
+    // AI: Held runs as an access point, so the Held UI is always the main page (no WiFi welcome page); WiFi setup stays at /settings/wifi
+    handleStaticContent(request, F("/held.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_held, PAGE_held_length);
+    #else
     if (!showWelcomePage || request->hasArg(F("sliders"))) {
-      #ifdef WLED_ENABLE_HELD
-      handleStaticContent(request, F("/held.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_held, PAGE_held_length);  // AI: Held UI is the main page
-      #else
       handleStaticContent(request, F("/index.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_index, PAGE_index_length);
-      #endif
     } else {
       serveSettings(request);
     }
+    #endif
   });
 
   #ifdef WLED_ENABLE_HELD

@@ -133,7 +133,7 @@ Hosted on https, the page can only simulate, because browsers block calls to `ht
 ### Open items and next steps
 
 - **Hardware bring-up:**
-  - Flash `held_esp32` and join `Held-AP` (password `wled1234`).
+  - Flash `held_esp32` and join `Held-AP` (password `heldgently`).
   - Configure the LED outputs, then confirm segments map to strips and the origin and direction are right on the physical loop.
   - Check `/json/held` and the live view.
 - **Sensors and audio board:** waiting on the other team's protocol (see `held_input.cpp`).
