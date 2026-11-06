@@ -371,6 +371,12 @@ bool deserializeState(JsonObject root, byte callMode, byte presetId)
 {
   bool stateResponse = root[F("v")] | false;
 
+  #ifdef WLED_ENABLE_HELD
+  // AI: "held" object in any state JSON (HTTP, WebSocket, serial) drives the Held engine
+  JsonObject heldCmd = root[F("held")];
+  if (!heldCmd.isNull()) heldDeserialize(heldCmd);
+  #endif
+
   #if defined(WLED_DEBUG) && defined(WLED_DEBUG_HOST)
   netDebugEnabled = root[F("debug")] | netDebugEnabled;
   #endif
@@ -1351,11 +1357,15 @@ class LockedJsonResponse: public AsyncJsonResponse {
 void serveJson(AsyncWebServerRequest* request)
 {
   enum class json_target {
-    all, state, info, state_info, nodes, effects, palettes, networks, config, pins
+    all, state, info, state_info, nodes, effects, palettes, networks, config, pins, held
   };
   json_target subJson = json_target::all;
 
   const String& url = request->url();
+  #ifdef WLED_ENABLE_HELD
+  if      (url.indexOf(F("held"))  > 0) subJson = json_target::held;  // AI: Held engine state/config
+  else
+  #endif
   if      (url.indexOf("state")    > 0) subJson = json_target::state;
   else if (url.indexOf("info")     > 0) subJson = json_target::info;
   else if (url.indexOf("si")       > 0) subJson = json_target::state_info;
@@ -1409,6 +1419,11 @@ void serveJson(AsyncWebServerRequest* request)
       serializeConfig(lDoc); break;
     case json_target::pins:
       serializePins(lDoc); break;
+    case json_target::held:
+      #ifdef WLED_ENABLE_HELD
+      heldSerialize(lDoc.as<JsonObject>(), !request->hasParam(F("s")));  // AI: ?s = state only
+      #endif
+      break;
     case json_target::state_info:
     case json_target::all:
       JsonObject state = lDoc.createNestedObject("state");

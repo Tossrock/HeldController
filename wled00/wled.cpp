@@ -102,6 +102,9 @@ void WLED::loop()
   #endif
   userLoop();
   UsermodManager::loop();
+  #ifdef WLED_ENABLE_HELD
+  heldLoop();  // AI: Held engine housekeeping (inputs, saving, segment check)
+  #endif
   #ifdef WLED_DEBUG
   usermodMillis = millis() - usermodMillis;
   avgUsermodMillis += usermodMillis;
@@ -544,6 +547,9 @@ void WLED::setup()
   DEBUG_PRINTLN(F("Usermods setup"));
   userSetup();
   UsermodManager::setup();
+  #ifdef WLED_ENABLE_HELD
+  heldSetup();  // AI: Held engine (registers its effect, loads /held.json)
+  #endif
   DEBUG_PRINTF_P(PSTR("heap %u\n"), getFreeHeapSize());
 
   if (needsCfgSave) serializeConfigToFS(); // usermods required new parameters; need to wait for strip to be initialised #4752

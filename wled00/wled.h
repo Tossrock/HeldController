@@ -208,6 +208,9 @@ using PSRAMDynamicJsonDocument = BasicJsonDocument<PSRAM_Allocator>;
 #include "pin_manager.h"
 #include "bus_manager.h"
 #include "FX.h"
+#ifdef WLED_ENABLE_HELD
+  #include "held/held.h"  // AI: Held engine integration
+#endif
 #include "wled_metadata.h"
 
 #ifndef CLIENT_SSID

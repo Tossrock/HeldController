@@ -21,6 +21,9 @@
 #endif
 #include "html_cpal.h"
 #include "html_edit.h"
+#ifdef WLED_ENABLE_HELD
+  #include "html_held.h"  // AI: Held control UI
+#endif
 
 // forward declarations
 static void createEditHandler();
@@ -438,6 +441,15 @@ void initServer()
     if (root.containsKey("pin")) checkSettingsPIN(root["pin"].as<const char*>());
 
     const String& url = request->url();
+    #ifdef WLED_ENABLE_HELD
+    // AI: POST /json/held takes the held command object directly and answers with the held state
+    if (url.indexOf(F("held")) > -1) {
+      heldDeserialize(root);
+      releaseJSONBufferLock();
+      serveJson(request);
+      return;
+    }
+    #endif
     isConfig = url.indexOf(F("cfg")) > -1;
     if (!isConfig) {
       /*
@@ -624,11 +636,22 @@ void initServer()
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (captivePortal(request)) return;
     if (!showWelcomePage || request->hasArg(F("sliders"))) {
+      #ifdef WLED_ENABLE_HELD
+      handleStaticContent(request, F("/held.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_held, PAGE_held_length);  // AI: Held UI is the main page
+      #else
       handleStaticContent(request, F("/index.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_index, PAGE_index_length);
+      #endif
     } else {
       serveSettings(request);
     }
   });
+
+  #ifdef WLED_ENABLE_HELD
+  // AI: the stock WLED control UI stays available for LED diagnostics
+  server.on(F("/classic"), HTTP_GET, [](AsyncWebServerRequest *request) {
+    handleStaticContent(request, F("/index.htm"), 200, FPSTR(CONTENT_TYPE_HTML), PAGE_index, PAGE_index_length);
+  });
+  #endif
 
 #ifndef WLED_DISABLE_2D
   #ifdef WLED_ENABLE_PIXART
