@@ -42,7 +42,8 @@ User-facing documentation for the fork is in `docs/held/README.md`: setup, the c
 | Engine | `wled00/held/held_core.{h,cpp}` ↔ `wled00/data/held/engine.js` | Two implementations kept **operation-for-operation identical**. |
 | Expressions | `wled00/held/held_expr.{h,cpp}` ↔ `wled00/data/held/expr.js` | Same grammar, bytecode and function semantics. |
 | WLED glue | `wled00/held/held_wled.cpp`, `held.h`, `held_input.cpp` | Effect, JSON API, `/held.json`, engine mutex. |
-| UI | `wled00/data/held/{index.htm,app.js,view3d.js,held.css}` | Inlined into `wled00/html_held.h` by `tools/cdata.js`. The Held UI is served at `/`; stock WLED moved to `/classic`. |
+| UI | `wled00/data/held/{index.htm,app.js,view3d.js,view3d_gl.js,held.css}` | Inlined into `wled00/html_held.h` by `tools/cdata.js`. The Held UI is served at `/`; stock WLED moved to `/classic`. |
+| Heart model | `tools/held/heart/build_heart.py` → `../istari-arts-site/src/static/held/heart_model.js` | Built from the printed chunk STLs with headless Blender; hosted, never in the firmware. |
 | Tooling | `tools/held-test.js`, `tools/held/{parity.js,parity_main.cpp,kymo.js,devserver.js}` | See Testing below. |
 
 Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_ENABLE_HELD`:
@@ -83,11 +84,13 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 - **Heartbeat speed defaults are 14 → 22 LED/s**, not the originally specified 5 → 10. Beats are `speed × 60 / BPM` LEDs apart; at 5 LED/s and 45 BPM that is 6.7 LEDs, less than the 10-LED waveform, so the beats blur into a texture. This was confirmed with kymographs.
 - **Pulse width is the span of one whole beat waveform**, not of a single bump.
 - **Origin, repetitions and mirroring are per strip, not per layer**, so events originate from the same point as the heartbeat.
-- **No three.js.** It is about 170 KB gzipped and needs a CDN. The 3D view is a small canvas-2D renderer, with a kymograph strip under it for judging timing.
+- **three.js only as a progressive enhancement.** It is about 170 KB gzipped and needs a CDN, so it is never bundled. The page always starts on the canvas-2D view (`view3d.js`), which works on the controller's AP without internet. `view3d_gl.js` then tries `import('three')` through the import map in `index.htm`. If that works, it swaps in a WebGL view with the same interface and loads the heart model. `?lite` skips the upgrade. Keep the three.js version in the import map and `THREE_BASE` in sync.
+- **The heart model is a script, not a `.glb` fetch.** istariarts.org sends no CORS headers. A `<script>` tag loads cross-origin anyway, so `heart_model.js` (`window.HeldHeartModel = {glb: base64}`) works from the hosted demo, from `http://held.local` and from `file://`. `?heart=<url>` overrides the location for testing.
+- **The heart model is drawn at true scale**: millimetres, centred on its bounding box, front toward +z. It is never scaled to fit the LEDs. The strip loop is an ellipse (`aspect`, plus `cx`/`cy`/`cz` offsets) with its perimeter fixed by `leds / density`, so the view shows honestly whether a strip fits.
 - **Expressions use a custom language rather than a JS engine.** QuickJS is too large for the flash. Elk and mJS are GPL/AGPL, which is unsuitable for this project. Params are evaluated once per frame, not per pixel, so a small bytecode VM is cheap. The JS side intentionally avoids `eval`, so the simulator can never accept something the device can't run.
 - **WLED features are compiled out with flags, not deleted.** Alexa, Hue, PixelForge, particle FX and usermods are off. E1.31/Art-Net/DDP are still compiled in. Flash is at about 83.5% of the app partition; disable more if it gets tight.
 - **`noisePan` defaults to 1.5 LED/s** so the drift is visible; 0 gives the old in-place look.
-- **The default strip is wider than the heart.** 120 LEDs at 60/m is a 2 m loop, about 64 cm across, but the heart is about 50 cm. The 3D view shows this. Fixing it needs a hardware decision (144/m strips or fewer LEDs).
+- **The default strip doesn't fit in the heart.** 120 LEDs at 60/m is a 2 m loop. Measured from the model, the interior on the mid front/back plane is only about 360 mm wide (217 mm left of the bounding-box centre, 143 mm right). About 84 LEDs at 60/m (1.4 m) with `aspect` 1.55, `cx` −30 and `cy` −40 fits in the front view. Fixing the default needs a hardware decision (strip length or density).
 
 ### Testing and verification
 
@@ -107,12 +110,19 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 - **Don't run `npm test` and a firmware build at the same time.** Both regenerate the `html_*.h` / `js_*.h` headers, which causes `EBUSY` errors.
 - **The parity check finds MSVC through `vswhere`** when no g++/clang is on PATH.
 - **Backslash escapes in Bash heredocs can be mangled** by some agent shells (`'\n'` became a literal newline). For edits containing escapes, use the editor tool or a script file.
+- **Second dev machine (2026-11):**
+  - The system Node is 12, which is too old for `node --test`. A portable Node 22 is in `%LOCALAPPDATA%\Programs\node-v22.11.0-win-x64`; prepend it to `PATH`.
+  - Blender 5.2 is in `C:\Program Files\Blender Foundation\Blender 5.2`. No Blender MCP server is configured, so it runs headless (`blender -b --factory-startup --python ...`).
+  - There is no Chrome; drive headless Edge (`msedge.exe --headless=new`, plus `--use-angle=swiftshader` for WebGL) the same way.
+  - PlatformIO isn't installed yet, and the system Python is 3.5.
+  - PowerShell 5 strips quotes from JSON passed as an argument to native programs; pass a file instead.
 
 ### Public demo
 
 The simulator is hosted at https://istariarts.org/held_simulator.html for teammates. It comes from the sibling repo `../istari-arts-site` (`git@github.com:Tossrock/istari-arts-site.git`): a push to its `main` deploys over scp through `.github/workflows/deploy.yaml`, which lists every deployed file explicitly. To refresh it after UI or engine changes:
 
 1. Run `npm run held:export -- ../istari-arts-site/src/held_simulator.html`.
+   - If the heart STLs changed: `blender -b --factory-startup --python tools/held/heart/build_heart.py -- Held_Heart_Pieces ../istari-arts-site/src/static/held/heart_model.js 0.2`. This uses the newest `_vNN` of each chunk. Ratio 0.2 gives about 63k triangles and a 177 KB Draco GLB. The STLs (about 16 MB) are not committed.
 2. Commit and push that repo.
 
 Hosted on https, the page can only simulate, because browsers block calls to `http://` controllers (mixed content).

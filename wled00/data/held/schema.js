@@ -37,12 +37,15 @@
 			{ k: 'origin', t: 'f', min: 0, max: 1500, d: 0, s: 1, u: 'LED', l: 'Origin', h: 'LED index pulses originate from (the "offset"). Pulses wrap across the physical ends of the strip.' },
 			{ k: 'reps', t: 'i', min: 1, max: 16, d: 1, l: 'Repetitions', h: 'Tile the whole pattern: every layer renders into leds/reps pixels, which are copied around the strip starting at the origin. Pulses then travel to the end of their copy.' },
 			{ k: 'mirror', t: 'b', min: 0, max: 1, d: 1, l: 'Mirror repetitions', h: 'Every other copy runs backwards, so neighbouring copies meet as reflections (otherwise plain repeat).' },
-			{ k: 'density', t: 'f', min: 10, max: 240, d: 60, s: 1, u: 'LED/m', l: 'Density', g: '3D placement', h: 'Simulator only: sets the circle radius from the strip length.' },
-			{ k: 'startAngle', t: 'f', min: -180, max: 180, d: -90, s: 1, u: '°', l: 'LED 0 angle', g: '3D placement', h: 'Simulator only: where LED 0 sits on the circle (-90 = bottom).' },
+			{ k: 'density', t: 'f', min: 10, max: 240, d: 60, s: 1, u: 'LED/m', l: 'Density', g: '3D placement', h: 'Simulator only: with the LED count this sets the strip length, and so the size of the loop.' },
+			{ k: 'aspect', t: 'f', min: 0.25, max: 4, d: 1.3, s: 0.05, l: 'Aspect (height / width)', g: '3D placement', h: 'Simulator only: stretch the loop into an ellipse. The strip length stays the same and LEDs stay evenly spaced; 1 is a circle.' },
+			{ k: 'startAngle', t: 'f', min: -180, max: 180, d: -90, s: 1, u: '°', l: 'LED 0 angle', g: '3D placement', h: 'Simulator only: where LED 0 sits on the loop (-90 = bottom).' },
 			{ k: 'ccw', t: 'b', min: 0, max: 1, d: 0, l: 'Counter-clockwise', g: '3D placement', h: 'Simulator only: direction of increasing LED index.' },
 			{ k: 'yaw', t: 'f', min: -180, max: 180, d: 0, s: 1, u: '°', l: 'Yaw', g: '3D placement', h: 'Simulator only: rotate the strip plane around the vertical axis.' },
 			{ k: 'pitch', t: 'f', min: -90, max: 90, d: 0, s: 1, u: '°', l: 'Pitch', g: '3D placement', h: 'Simulator only: tilt the strip plane forward/back.' },
-			{ k: 'cy', t: 'f', min: -400, max: 400, d: 0, s: 5, u: 'mm', l: 'Height offset', g: '3D placement', h: 'Simulator only: vertical offset of the circle centre.' }
+			{ k: 'cx', t: 'f', min: -400, max: 400, d: 0, s: 5, u: 'mm', l: 'Side offset', g: '3D placement', h: 'Simulator only: moves the loop centre right (+) or left (−) inside the heart.' },
+			{ k: 'cy', t: 'f', min: -400, max: 400, d: 0, s: 5, u: 'mm', l: 'Height offset', g: '3D placement', h: 'Simulator only: moves the loop centre up (+) or down (−) inside the heart.' },
+			{ k: 'cz', t: 'f', min: -400, max: 400, d: 0, s: 5, u: 'mm', l: 'Depth offset', g: '3D placement', h: 'Simulator only: moves the loop centre toward the front (+) or back (−) of the heart.' }
 		],
 
 		layers: [

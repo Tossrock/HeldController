@@ -23,7 +23,7 @@
 	const EXPR_HEAD = '(pieces, t, et, level) => ';
 
 	const eng = new HeldEngine();
-	const view = new HeldView3D($('view'));
+	let view = new HeldView3D($('view'));   // replaced by the WebGL view if three.js loads (start())
 	const kymo = new HeldKymo($('kymo'));
 
 	const app = {
@@ -480,14 +480,21 @@
 		return box;
 	}
 
-	const TABS = () => S.layers.map((L) => ({ k: L.k, l: L.l })).concat([{ k: 'strips', l: 'Strips' }, { k: 'setup', l: 'Setup' }]);
+	// Top-level tabs; "Pattern config" holds one sub-tab per layer (app.tab is the layer key then).
+	const TABS = [{ k: 'pattern', l: 'Pattern config' }, { k: 'strips', l: 'Strip config' }, { k: 'setup', l: 'Setup' }];
+	const tabGroup = () => (S.layerByKey[app.tab] ? 'pattern' : app.tab);
 
 	function buildTabs() {
 		const nav = $('tabs');
 		nav.innerHTML = '';
-		for (const t of TABS()) {
-			const b = el('button', t.k === app.tab ? 'sel' : '', t.l);
-			b.onclick = () => { app.tab = t.k; buildTabs(); renderPanel(); };
+		for (const t of TABS) {
+			const b = el('button', t.k === tabGroup() ? 'sel' : '', t.l);
+			b.onclick = () => {
+				if (S.layerByKey[app.tab]) app.layerTab = app.tab;
+				app.tab = t.k === 'pattern' ? (app.layerTab || S.layers[0].k) : t.k;
+				buildTabs();
+				renderPanel();
+			};
 			nav.appendChild(b);
 		}
 	}
@@ -498,6 +505,13 @@
 		app.nowEls = [];
 		if (app.tab === 'strips') return renderStrips(p);
 		if (app.tab === 'setup') return renderSetup(p);
+		const sub = el('nav', 'subtabs');
+		for (const L of S.layers) {
+			const b = el('button', L.k === app.tab ? 'sel' : '', L.l);
+			b.onclick = () => { app.tab = app.layerTab = L.k; renderPanel(); };
+			sub.appendChild(b);
+		}
+		p.appendChild(sub);
 		const L = S.layerByKey[app.tab];
 		p.appendChild(el('p', 'lhelp', L.h));
 		let grp = null;
@@ -765,6 +779,7 @@
 		renderPieces();
 		updateBadge();
 		requestAnimationFrame(frame);
+		if (window.HeldViewGL) HeldViewGL.upgrade(view).then((v) => { if (v) view = v; });
 
 		// device detection: ?ip=..., then same origin (served by the controller or the dev proxy)
 		const qp = new URLSearchParams(location.search).get('ip');

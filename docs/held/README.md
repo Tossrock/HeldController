@@ -141,7 +141,8 @@ The pins are debounced (30 ms) and only edges are reported, so pieces set from t
 | `wled00/held/held_input.cpp` | Sensor / audio-board input placeholder. |
 | `wled00/data/held/schema.js` | The same parameters with UI labels, units and help text. |
 | `wled00/data/held/engine.js`, `expr.js` | JavaScript ports of the engine and the expression compiler, used by the simulator. |
-| `wled00/data/held/{index.htm,app.js,view3d.js,held.css}` | The UI. The build inlines it into `wled00/html_held.h`, about 20 KB gzipped. |
+| `wled00/data/held/{index.htm,app.js,view3d.js,view3d_gl.js,held.css}` | The UI. The build inlines it into `wled00/html_held.h`, about 28 KB gzipped. |
+| `tools/held/heart/build_heart.py` | Joins the printed heart chunk STLs in Blender and builds the web model (`heart_model.js`, hosted on istariarts.org). |
 | `tools/held-test.js` | Tests (run by `npm test`). |
 | `tools/held/parity.js` | Compiles the C++ core natively and diffs its frames against `engine.js`. |
 | `tools/held/devserver.js` | The `npm run held:sim` dev server. |
@@ -166,7 +167,7 @@ The engine exists twice: C++ for the controller and JS for the simulator. They a
 ## Notes and deliberate choices
 
 - **Heartbeat speed defaults are 14 → 22 LED/s** rather than the 5 → 10 first specified. Successive beats are `speed × 60 / BPM` LEDs apart. At 5 LED/s and 45 BPM that is 6.7 LEDs, less than the 10-LED waveform, so the beats overlap into a uniform texture. Keep `speed × 60 / BPM` above `pulseWidth` for distinct beats.
-- **Strip size vs. the heart.** 120 LEDs at 60 LED/m is a 2 m loop, about 64 cm across, which is wider than the 50 cm heart. The 3D view shows this, with the ellipsoid as the heart's outer extents. 144 LED/m strips, or about 90 LEDs at 60/m, fit inside.
-- **No three.js.** three.js is about 170 KB gzipped, which is too much to serve from the ESP32, and in AP mode phones have no internet for a CDN. The 3D view is a small canvas-2D renderer instead.
+- **Strip size vs. the heart.** 120 LEDs at 60 LED/m is a 2 m loop, which doesn't fit inside the heart. On the middle front/back plane the inside is only about 36 cm wide. The 3D view shows the real heart model at true scale. Use the strip's **Aspect** and **offset** settings to shape and place the loop. About 84 LEDs at 60/m (aspect 1.55, side −30 mm, height −40 mm) fits.
+- **The 3D heart needs internet.** three.js (about 170 KB gzipped) is too big to serve from the ESP32, and on the controller's access point phones have no internet. So the page starts with a small canvas-2D view, showing the heart's bounding ellipsoid. If three.js can be loaded from the CDN, it switches to a WebGL view of the translucent heart model, lit from inside by the LEDs. Add `?lite` to the address to stay on the canvas view.
 - **WLED features compiled out:** Alexa, Hue sync, PixelForge, particle-system effects, and usermods. Network realtime protocols (E1.31/Art-Net/DDP) are still compiled in. They are inert unless something sends to them, and removing them touches a lot of WLED; disable them later if flash gets tight (currently ~81% of the app partition).
 <!-- AI: end -->

@@ -6,6 +6,8 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 	<meta name="theme-color" content="#120806">
 	<title>Held</title>
+	<!-- three.js for the optional WebGL view (view3d_gl.js); only fetched when online. Keep the version in sync with THREE_BASE there. -->
+	<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
 	<link rel="stylesheet" href="held.css">
 </head>
 <body>
@@ -32,7 +34,7 @@
 					<button id="srcBtn" class="chip" title="Show the device's real LEDs or the local simulation" hidden>Live</button>
 					<button id="rotBtn" class="chip on" title="Auto-rotate">⟳</button>
 					<button id="glowBtn" class="chip on" title="Glow">✺</button>
-					<button id="shellBtn" class="chip on" title="Show the heart's outer extents">◯</button>
+					<button id="shellBtn" class="chip on" title="Show the heart">◯</button>
 					<button id="frontBtn" class="chip" title="Reset view">⌂</button>
 				</div>
 				<div id="pick" hidden></div>
@@ -87,6 +89,7 @@
 	<script src="expr.js"></script>
 	<script src="engine.js"></script>
 	<script src="view3d.js"></script>
+	<script src="view3d_gl.js"></script>
 	<script src="app.js"></script>
 </body>
 </html>

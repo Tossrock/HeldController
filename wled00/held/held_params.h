@@ -22,11 +22,14 @@
   X(reps,       INT,   0, 1, 16, 1, 1) \
   X(mirror,     BOOL,  0, 0, 1, 1, 1) \
   X(density,    FLOAT, 0, 10, 240, 60, 60) \
+  X(aspect,     FLOAT, 0, 0.25, 4, 1.3, 1.3) \
   X(startAngle, FLOAT, 0, -180, 180, -90, -90) \
   X(ccw,        BOOL,  0, 0, 1, 0, 0) \
   X(yaw,        FLOAT, 0, -180, 180, 0, 0) \
   X(pitch,      FLOAT, 0, -90, 90, 0, 0) \
-  X(cy,         FLOAT, 0, -400, 400, 0, 0)
+  X(cx,         FLOAT, 0, -400, 400, 0, 0) \
+  X(cy,         FLOAT, 0, -400, 400, 0, 0) \
+  X(cz,         FLOAT, 0, -400, 400, 0, 0)
 
 #define HELD_HEARTBEAT_PARAMS(X) \
   X(enabled,    BOOL,  0, 0, 1, 1, 1) \
@@ -51,7 +54,8 @@
   X(noiseAmount,       FLOAT, 1, 0, 1, 0.3, 0.4) \
   X(noiseColor,        COLOR, 0, 0, 0xFFFFFF, 0x8C1028, 0x8C1028) \
   X(noiseScale,        FLOAT, 0, 2, 120, 18, 18) \
-  X(noiseSpeed,        FLOAT, 0, 0, 2, 0.15, 0.15)   X(noisePan,          FLOAT, 0, -30, 30, 1.5, 1.5) \
+  X(noiseSpeed,        FLOAT, 0, 0, 2, 0.15, 0.15) \
+  X(noisePan,          FLOAT, 0, -30, 30, 1.5, 1.5) \
   X(noiseOctaves,      INT,   0, 1, 4, 2, 2) \
   X(noiseThreshold,    FLOAT, 0, 0, 0.95, 0.4, 0.4) \
   X(twinkleRate,       FLOAT, 1, 0, 40, 2, 5) \
@@ -122,5 +126,6 @@
   X(beatFloor,         FLOAT, 0, 0, 1, 0.2, 0.2) \
   X(dubStrength,       FLOAT, 0, 0, 1, 0.6, 0.6) \
   X(dubDelay,          FLOAT, 0, 0.05, 0.6, 0.28, 0.28) \
-  X(cancelFade,        FLOAT, 0, 0, 5, 1, 1)   X(releaseGrace,      FLOAT, 0, 0, 60, 10, 10)
+  X(cancelFade,        FLOAT, 0, 0, 5, 1, 1) \
+  X(releaseGrace,      FLOAT, 0, 0, 60, 10, 10)
 // AI: end

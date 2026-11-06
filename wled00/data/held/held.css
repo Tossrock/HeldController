@@ -85,6 +85,9 @@ h4 { margin: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spac
 #tabs button { border-radius: 8px 8px 0 0; border-bottom: none; white-space: nowrap; background: var(--bg); color: var(--muted); }
 #tabs button.sel { background: var(--panel); color: var(--text); border-color: var(--line); }
 #panel { border-top-left-radius: 0; }
+.subtabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.subtabs button { border-radius: 999px; padding: 5px 12px; font-size: 13px; white-space: nowrap; background: var(--bg); color: var(--muted); }
+.subtabs button.sel { background: var(--accent); border-color: #ff9a60; color: #fff; }
 .lhelp { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
 .prm { padding: 7px 0; border-bottom: 1px solid #26140f; }
 .prm:last-child { border-bottom: none; }
