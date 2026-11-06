@@ -10,6 +10,8 @@
   "scripts": {
     "build": "node tools/cdata.js",
     "test": "node --test",
+    "held:sim": "node tools/held/devserver.js",
+    "held:parity": "node tools/held/parity.js",
     "dev": "nodemon -e js,html,htm,css,png,jpg,gif,ico,js -w tools/ -w wled00/data/ -x node tools/cdata.js"
   },
   "repository": {
