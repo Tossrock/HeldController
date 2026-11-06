@@ -26,7 +26,7 @@ User-facing documentation for the fork is in `docs/held/README.md`: setup, the c
 - The **audio runs on a separate ESP32**, owned by another artist. This firmware only handles LEDs.
 - **Not yet defined by the other team members (as of 2026-11):** the sensor wiring and the audio-board link protocol. `wled00/held/held_input.cpp` is a placeholder; ask for the agreed protocol before implementing it. The JSON API (`{"held":{...}}` over serial, HTTP or WebSocket) already works as an interface.
 - **LED hardware:** WS2812 strips in roughly circular loops inside the heart. Default is one strip of 120 LEDs at 60 LED/m; a second, roughly orthogonal loop may be added.
-- **Status:** never run on real hardware yet. The firmware compiles. The engine was verified natively against the browser engine. The UI was tested in headless Chrome, in simulator mode and against a mock controller.
+- **Status (2026-11-06):** first flashed to real hardware, a TinyPICO bench board with 60 LEDs. It booted, reported 60 LEDs on the Held effect, and accepted `{"held":...}` over serial. The heart's own wiring and controller are not set up yet. The engine was verified natively against the browser engine. The UI was tested in headless Chrome, in simulator mode and against a mock controller.
 
 ### How the user likes to work
 
@@ -111,10 +111,13 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 - **The parity check finds MSVC through `vswhere`** when no g++/clang is on PATH.
 - **Backslash escapes in Bash heredocs can be mangled** by some agent shells (`'\n'` became a literal newline). For edits containing escapes, use the editor tool or a script file.
 - **Second dev machine (2026-11):**
-  - The system Node is 12, which is too old for `node --test`. A portable Node 22 is in `%LOCALAPPDATA%\Programs\node-v22.11.0-win-x64`; prepend it to `PATH`.
+  - Node is managed by nvm-windows (`NVM_HOME=%LOCALAPPDATA%\nvm`), with 22.x active through the symlink `C:\nvm4w\nodejs`. The old system Node 12 was uninstalled. Shells started before that change may still lack the new PATH; restart them.
   - Blender 5.2 is in `C:\Program Files\Blender Foundation\Blender 5.2`. No Blender MCP server is configured, so it runs headless (`blender -b --factory-startup --python ...`).
   - There is no Chrome; drive headless Edge (`msedge.exe --headless=new`, plus `--use-angle=swiftshader` for WebGL) the same way.
-  - PlatformIO isn't installed yet, and the system Python is 3.5.
+  - PlatformIO comes from the VS Code extension: `%USERPROFILE%\.platformio\penv\Scripts\pio.exe`. Its build hook runs `npm ci` / `npm run build` with the `node` on PATH; an old Node fails with `Cannot find module 'node:fs'`. The first ESP32 build failed once with "Failed to install Python dependencies into penv" (output is hidden). Running the same `uv pip install` by hand showed everything installed, and a retry built fine.
+  - Bench board: TinyPICO (ESP32-PICO-D4) on COM7, with 60 × WS2812 on GPIO 23. `platformio_override.ini` (gitignored) defines `[env:held_tinypico]` with `-D DATA_PINS=23 -D PIXEL_COUNTS=60`. These are only first-boot defaults; a saved `cfg.json` wins.
+  - To reset device settings: `python -m esptool --port COM7 --baud 460800 erase-region 0x310000 0xF0000` erases the LittleFS partition and keeps the firmware. 921600 baud is unreliable on this board. The pre-Held settings are backed up in `docs/temp/tinypico_{nvs,fs}_*.bin`.
+  - Serial JSON works for quick checks: send `{"v":true}` plus a newline at 115200, using pyserial from the penv Python with DTR/RTS low so the board isn't reset.
   - PowerShell 5 strips quotes from JSON passed as an argument to native programs; pass a file instead.
 
 ### Public demo
