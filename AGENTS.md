@@ -108,6 +108,15 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 - **The parity check finds MSVC through `vswhere`** when no g++/clang is on PATH.
 - **Backslash escapes in Bash heredocs can be mangled** by some agent shells (`'\n'` became a literal newline). For edits containing escapes, use the editor tool or a script file.
 
+### Public demo
+
+The simulator is hosted at https://istariarts.org/held_simulator.html for teammates. It comes from the sibling repo `../istari-arts-site` (`git@github.com:Tossrock/istari-arts-site.git`): a push to its `main` deploys over scp through `.github/workflows/deploy.yaml`, which lists every deployed file explicitly. To refresh it after UI or engine changes:
+
+1. Run `npm run held:export -- ../istari-arts-site/src/held_simulator.html`.
+2. Commit and push that repo.
+
+Hosted on https, the page can only simulate, because browsers block calls to `http://` controllers (mixed content).
+
 ### Open items and next steps
 
 - **Hardware bring-up:**
@@ -131,6 +140,7 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 | `pio run -e held_esp32` | Build the Held firmware (run from PowerShell on Windows) | 2 min |
 | `npm run held:sim` | Held UI from source at localhost:8080 (`-- --device <ip>` proxies to a controller) | continuous |
 | `npm run held:parity` | Native C++ vs JS engine frame comparison (also part of `npm test`) | 10s |
+| `npm run held:export -- <out.html>` | Export the UI as one readable self-contained page (simulator-only when hosted) | 5s |
 
 **Always run `npm ci && npm run build` before `pio run`.** The web UI build generates
 required C headers for firmware compilation.
