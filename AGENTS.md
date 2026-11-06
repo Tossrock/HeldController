@@ -1,4 +1,8 @@
-# AGENTS.md — WLED AI Coding Agent & AI Code Review Reference
+# AGENTS.md — HeldController (WLED fork) AI Coding Agent Reference
+
+This repository is **HeldController**: a fork of WLED that is the LED controller for the "Held"
+art installation. Read the **Held fork** section first. Everything after it is the upstream WLED
+reference, which still applies to the WLED code this fork is built on.
 
 WLED is C++ firmware for ESP32/ESP8266 microcontrollers controlling addressable LEDs,
 with a web UI (HTML/JS/CSS). Built with PlatformIO (Arduino framework) and Node.js tooling.
@@ -11,6 +15,108 @@ Always reference these instructions - including coding guidelines in `docs/*.ins
 
 Design documentation and AI agent temporary notes can be placed into `docs/` sub-folders, like `docs/architecture/`, `docs/design/`, `docs/requirements/`, `docs/testing/`, `docs/temp/`. `docs/temp/` is listed in `.gitignore` so its the preferred location for notes that should not become part of a PR.
 
+## Held fork
+
+User-facing documentation for the fork is in `docs/held/README.md`: setup, the control API, how the engine works, and how to add a layer. This section holds what an agent needs on top of that: project context, invariants, design decisions with their reasons, and environment lessons.
+
+### Project context
+
+- **Held** is a ~750 × 500 mm 3D-printed anatomical heart, suspended from rigging. The owner did the modelling in Autodesk Fusion.
+- Six "missing pieces" hang on thin chains. Pushing a piece back in trips a hall sensor. When all six are held in at once, recorded stories about being heartbroken and then held by community play. Six is enough that it takes at least two people.
+- The **audio runs on a separate ESP32**, owned by another artist. This firmware only handles LEDs.
+- **Not yet defined by the other team members (as of 2026-11):** the sensor wiring and the audio-board link protocol. `wled00/held/held_input.cpp` is a placeholder; ask for the agreed protocol before implementing it. The JSON API (`{"held":{...}}` over serial, HTTP or WebSocket) already works as an interface.
+- **LED hardware:** WS2812 strips in roughly circular loops inside the heart. Default is one strip of 120 LEDs at 60 LED/m; a second, roughly orthogonal loop may be added.
+- **Status:** never run on real hardware yet. The firmware compiles. The engine was verified natively against the browser engine. The UI was tested in headless Chrome, in simulator mode and against a mock controller.
+
+### How the user likes to work
+
+- They want everything tunable, both from code/API and from the web UI, so they can explore the visual design space. Exercise judgment and add natural extensions. Ask before substantial deviations, and flag any spec defaults you changed, with the reason.
+- They prefer the **lub-dub** waveform (now the default).
+- New parameters should come with sensible defaults, help text, and a UI control.
+
+### Architecture
+
+| Part | Where | Notes |
+|---|---|---|
+| Param tables | `wled00/held/held_params.h` (X-macros) ↔ `wled00/data/held/schema.js` | Same order, keys, types, limits and defaults; `npm test` enforces it. Event groups must have `enabled` as param 0. |
+| Engine | `wled00/held/held_core.{h,cpp}` ↔ `wled00/data/held/engine.js` | Two implementations kept **operation-for-operation identical**. |
+| Expressions | `wled00/held/held_expr.{h,cpp}` ↔ `wled00/data/held/expr.js` | Same grammar, bytecode and function semantics. |
+| WLED glue | `wled00/held/held_wled.cpp`, `held.h`, `held_input.cpp` | Effect, JSON API, `/held.json`, engine mutex. |
+| UI | `wled00/data/held/{index.htm,app.js,view3d.js,held.css}` | Inlined into `wled00/html_held.h` by `tools/cdata.js`. The Held UI is served at `/`; stock WLED moved to `/classic`. |
+| Tooling | `tools/held-test.js`, `tools/held/{parity.js,parity_main.cpp,kymo.js,devserver.js}` | See Testing below. |
+
+Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_ENABLE_HELD`:
+
+- `wled.cpp`: `heldSetup()` and `heldLoop()`.
+- `wled.h`: the include.
+- `json.cpp`: the `"held"` key in `deserializeState`, and the `json_target::held` serve target.
+- `wled_server.cpp`: `POST /json/held`, `/` and `/classic`.
+
+**Engine model:**
+
+- **Layers.** Each strip composites, in order: heartbeat, ambient, then events in trigger order (pieceIn, pieceOut, allIn). Values are perceptual 0..1 floats; WLED applies gamma and `bri`.
+- **Virtual strip.** Each strip renders into a virtual strip of `round(leds/reps)` pixels with the origin at pixel 0. `tile()` then repeats or mirrors that around the physical strip starting at the origin, so repetitions apply to the whole composite.
+- **Level.** `min(pieces, numPieces-1) / (numPieces-1)`, smoothed by `levelSmoothing`.
+- **Param values.** A number, a `[level0, level1]` pair (the `ranged` flag is explicit; any FLOAT/INT can be ranged), or an expression string (FLOAT/INT layer params only, at most 24 at once). Colours are `"#RRGGBB"` in JSON.
+- **Event-time (`et`) expressions** are re-resolved per event by `resolveEt(group, age)`. The calls sit in `trigger`, `cancel`, `tickEvents`, `render`, `state`/`eventInfo`, and the grace check in `setPieces`. Keep those call sites identical in both engines.
+- **Events:**
+  - Count up fires `pieceIn`; reaching all pieces fires `allIn` instead (not restarted if already running).
+  - Count down fires `pieceOut`, and cancels `allIn` if the count dropped from all pieces.
+  - In the last `releaseGrace` seconds of `allIn`, removals are ignored but still change the level.
+- **Firmware.** Segment *i* = Held strip *i* (`WLED_AUTOSEGMENTS` makes one segment per LED output), up to 4 strips; LED counts come from segments. `autoApply` keeps every segment on the Held effect. Engine access goes through a FreeRTOS mutex, and the renderer never waits: it keeps the last frame instead.
+
+### Invariants: read before changing the engine
+
+1. **Change both engines together.** Mirror every change in C++ and JS, in the same order of operations. PRNG draws (`rand01()` / `_rand()`) must happen in the same sequence. In C++, draw into separate statements, because argument evaluation order is unspecified.
+2. **C++ number types.**
+   - Use the `hf` type (float on the MCU, double for parity).
+   - Write non-dyadic constants as `HC(0.3)`, so float builds stay single-precision.
+   - Expressions evaluate in `double`, so `t` stays smooth over long uptimes.
+3. **Run `npm test` after engine changes.** It includes the native parity check (`tools/held/parity.js`), which compiles the C++ core with MSVC/g++/clang and diffs frames against engine.js (tolerance 1e-4; matches are typically about 5e-8). For new behaviour, add a parity scenario that exercises it. The parity check is skipped if no compiler is found.
+4. **Avoid long-uptime float drift.** Noise time wraps at a periodic lattice (`NOISE_TP`), and pan offsets wrap per strip, so float precision on the device doesn't degrade after days of uptime. Don't add raw ever-growing float accumulators.
+5. **Keep stock WLED building.** Everything is behind `WLED_ENABLE_HELD` (ESP32-only, set only in `[env:held_esp32]`). Check `pio run -e esp32dev` as well as `pio run -e held_esp32`.
+6. **Keep the UI small and self-contained.** No external libraries or CDNs: phones on the controller's AP have no internet. Use classic `<script>` tags, not ES modules, so `index.htm` works from `file://`. Tabs for indentation. The current size is about 24 KB gzipped.
+7. **Don't use ArduinoJson `const char*` for dynamic strings.** Assigning a `const char*` stores a pointer, which dangles after the engine lock is released and the async response is sent. Assign `char*` (copied) for engine-owned strings.
+
+### Design decisions, and why
+
+- **Heartbeat speed defaults are 14 → 22 LED/s**, not the originally specified 5 → 10. Beats are `speed × 60 / BPM` LEDs apart; at 5 LED/s and 45 BPM that is 6.7 LEDs, less than the 10-LED waveform, so the beats blur into a texture. This was confirmed with kymographs.
+- **Pulse width is the span of one whole beat waveform**, not of a single bump.
+- **Origin, repetitions and mirroring are per strip, not per layer**, so events originate from the same point as the heartbeat.
+- **No three.js.** It is about 170 KB gzipped and needs a CDN. The 3D view is a small canvas-2D renderer, with a kymograph strip under it for judging timing.
+- **Expressions use a custom language rather than a JS engine.** QuickJS is too large for the flash. Elk and mJS are GPL/AGPL, which is unsuitable for this project. Params are evaluated once per frame, not per pixel, so a small bytecode VM is cheap. The JS side intentionally avoids `eval`, so the simulator can never accept something the device can't run.
+- **WLED features are compiled out with flags, not deleted.** Alexa, Hue, PixelForge, particle FX and usermods are off. E1.31/Art-Net/DDP are still compiled in. Flash is at about 83.5% of the app partition; disable more if it gets tight.
+- **`noisePan` defaults to 1.5 LED/s** so the drift is visible; 0 gives the old in-place look.
+- **The default strip is wider than the heart.** 120 LEDs at 60/m is a 2 m loop, about 64 cm across, but the heart is about 50 cm. The 3D view shows this. Fixing it needs a hardware decision (144/m strips or fewer LEDs).
+
+### Testing and verification
+
+- `npm test` runs the schema consistency check, engine and expression tests, the parity check, and WLED's own `cdata` tests.
+- **Visual checks:**
+  - `node tools/held/kymo.js --out k.png --seconds 20 --script '[[2,63]]' --strip '{"leds":120,"reps":2}'` renders a run to a space-time PNG. View it to judge pulse spacing, speed and event timing.
+  - For UI checks, drive headless Chrome (`chrome --headless=new --remote-debugging-port=N`) over the DevTools protocol with Node's built-in `WebSocket`: click elements, read the DOM, catch `Runtime.exceptionThrown`, and take screenshots. Do this on a copy of the built page, gunzipped from `wled00/html_held.h`, to catch minifier issues. Also test a phone viewport (390 px).
+  - For device mode without hardware, stand up a small Node mock of `/json/held` backed by engine.js. Only a mock has been tested so far, never real firmware.
+
+### Environment lessons (Windows dev machine)
+
+- **Run PlatformIO from PowerShell or cmd, never Git Bash.**
+  - The ESP-IDF tool installer rejects MSYS ("MSys/Mingw is not supported"). It leaves empty toolchain packages, and the build later fails with `xtensa-esp32-elf-g++ is not recognized`.
+  - In PowerShell, run `Remove-Item Env:MSYSTEM` first.
+  - `pio` may not be on PATH: use `%USERPROFILE%\.platformio\penv\Scripts\pio.exe`.
+- **Don't pipe `pio` into `head`.** The build blocks once the pipe closes.
+- **Don't run `npm test` and a firmware build at the same time.** Both regenerate the `html_*.h` / `js_*.h` headers, which causes `EBUSY` errors.
+- **The parity check finds MSVC through `vswhere`** when no g++/clang is on PATH.
+- **Backslash escapes in Bash heredocs can be mangled** by some agent shells (`'\n'` became a literal newline). For edits containing escapes, use the editor tool or a script file.
+
+### Open items and next steps
+
+- **Hardware bring-up:**
+  - Flash `held_esp32` and join `Held-AP` (password `wled1234`).
+  - Configure the LED outputs, then confirm segments map to strips and the origin and direction are right on the physical loop.
+  - Check `/json/held` and the live view.
+- **Sensors and audio board:** waiting on the other team's protocol (see `held_input.cpp`).
+- **Sizing:** decide strip density and length for the heart's actual size.
+
 ## Build Commands
 
 
@@ -22,6 +128,9 @@ Design documentation and AI agent temporary notes can be placed into `docs/` sub
 | `npm run dev` | Watch mode — auto-rebuilds web UI on changes | continuous |
 | `pio run -e esp32dev` | Build firmware (ESP32, most common target) | 5 min |
 | `pio run -e nodemcuv2` | Build firmware (ESP8266) | 5 min |
+| `pio run -e held_esp32` | Build the Held firmware (run from PowerShell on Windows) | 2 min |
+| `npm run held:sim` | Held UI from source at localhost:8080 (`-- --device <ip>` proxies to a controller) | continuous |
+| `npm run held:parity` | Native C++ vs JS engine frame comparison (also part of `npm test`) | 10s |
 
 **Always run `npm ci && npm run build` before `pio run`.** The web UI build generates
 required C headers for firmware compilation.
