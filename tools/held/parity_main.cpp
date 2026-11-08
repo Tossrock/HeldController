@@ -6,6 +6,7 @@
  *   param <group> <key> <a> <b>   pieces <mask>
  *   trigger <event>               cancel <event>
  *   expr <group> <key> <source>   tick <dt>
+ *   sync <mask>                   extclock 0|1      beat
  *   render                        (prints one line per strip of 3*leds values)
  */
 #include <cstdio>
@@ -41,6 +42,12 @@ int main() {
       if (k >= 0) e.setParam((uint8_t)g, (uint8_t)k, (hf)x, (hf)y, true);
     } else if (sscanf(line, "pieces %lf", &x) == 1) {
       e.setPieces((uint32_t)x);
+    } else if (sscanf(line, "sync %lf", &x) == 1) {
+      e.setPieces((uint32_t)x, false);
+    } else if (sscanf(line, "extclock %d", &i) == 1) {
+      e.setExternalClock(i != 0);
+    } else if (strncmp(line, "beat", 4) == 0) {
+      e.beat();
     } else if (sscanf(line, "trigger %63s", a) == 1) {
       e.trigger((uint8_t)findEvent(a));
     } else if (sscanf(line, "cancel %63s", a) == 1) {

@@ -14,7 +14,10 @@
 #define HELD_GLOBAL_PARAMS(X) \
   X(numPieces,      INT,   0, 2, 12, 6, 6) \
   X(levelSmoothing, FLOAT, 0, 0, 10, 1.5, 1.5) \
-  X(autoEvents,     BOOL,  0, 0, 1, 1, 1)
+  X(autoEvents,     BOOL,  0, 0, 1, 1, 1) \
+  X(allInTrigger,   ENUM,  0, 0, 1, 0, 0) \
+  X(beatSync,       BOOL,  0, 0, 1, 1, 1) \
+  X(beatTimeout,    FLOAT, 0, 0, 30, 4, 4)
 
 #define HELD_STRIP_PARAMS(X) \
   X(leds,       INT,   0, 1, 1500, 120, 120) \
@@ -128,4 +131,17 @@
   X(dubDelay,          FLOAT, 0, 0.05, 0.6, 0.28, 0.28) \
   X(cancelFade,        FLOAT, 0, 0, 5, 1, 1) \
   X(releaseGrace,      FLOAT, 0, 0, 60, 10, 10)
+
+#define HELD_STORYEND_PARAMS(X) \
+  X(enabled,   BOOL,  0, 0, 1, 1, 1) \
+  X(opacity,   FLOAT, 0, 0, 1, 1, 1) \
+  X(blend,     ENUM,  0, 0, 2, 1, 1) \
+  X(color,     COLOR, 0, 0, 0xFFFFFF, 0xFFC890, 0xFFC890) \
+  X(intensity, FLOAT, 0, 0, 2, 0.6, 0.6) \
+  X(speed,     FLOAT, 0, 1, 200, 25, 25) \
+  X(softness,  FLOAT, 0, 1, 80, 18, 18) \
+  X(travel,    FLOAT, 0, 0.05, 1, 0.5, 0.5) \
+  X(attack,    FLOAT, 0, 0, 10, 1.2, 1.2) \
+  X(hold,      FLOAT, 0, 0, 20, 0.8, 0.8) \
+  X(release,   FLOAT, 0, 0.1, 20, 5, 5)
 // AI: end

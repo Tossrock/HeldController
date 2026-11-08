@@ -27,7 +27,10 @@
 		global: [
 			{ k: 'numPieces', t: 'i', min: 2, max: 12, d: 6, l: 'Pieces', h: 'Number of removable pieces. Level reaches its maximum at numPieces-1; the last piece triggers the "Last piece" event.' },
 			{ k: 'levelSmoothing', t: 'f', min: 0, max: 10, d: 1.5, s: 0.1, u: 's', l: 'Level smoothing', h: 'Time constant for easing between piece levels, so BPM/brightness changes glide rather than jump.' },
-			{ k: 'autoEvents', t: 'b', min: 0, max: 1, d: 1, l: 'Auto events', h: 'Trigger the piece in/out/last-piece events automatically when the piece count changes.' }
+			{ k: 'autoEvents', t: 'b', min: 0, max: 1, d: 1, l: 'Auto events', h: 'Trigger the piece in/out/last-piece events automatically when the piece count changes.' },
+			{ k: 'allInTrigger', t: 'e', min: 0, max: 1, d: 0, o: ['Last piece', 'Story start'], l: 'Last-piece animation starts on', g: 'Audio link', h: '"Story start" waits for the audio board\'s STORY START message, so re-seating a piece mid-story doesn\'t replay it. Use it once the audio board sends STORY START.' },
+			{ k: 'beatSync', t: 'b', min: 0, max: 1, d: 1, l: 'Follow audio heartbeat', g: 'Audio link', h: 'Emit a heartbeat pulse on every BEAT from the audio board, timed so the lub lights the origin as it sounds, instead of using the heartbeat BPM.' },
+			{ k: 'beatTimeout', t: 'f', min: 0, max: 30, d: 4, s: 0.5, u: 's', l: 'Beat timeout', g: 'Audio link', h: 'If no BEAT arrives for this long, the heartbeat goes back to its own BPM. 0 = keep waiting.' }
 		],
 
 		// Per-strip mapping params. `leds` comes from the WLED LED settings on a device;
@@ -169,6 +172,24 @@
 			}
 		]
 	};
+
+	HELD_SCHEMA.layers.push({
+		k: 'storyEnd', kind: 'event', l: 'Story ended',
+		h: 'Event: a warm glow that spreads from the origin and fades, when the audio board reports the end of a story.',
+		p: [
+			{ k: 'enabled', t: 'b', min: 0, max: 1, d: 1, l: 'Enabled' },
+			{ k: 'opacity', t: 'f', min: 0, max: 1, d: 1, s: 0.01, l: 'Opacity' },
+			{ k: 'blend', t: 'e', min: 0, max: 2, d: 1, o: BLEND, l: 'Blend' },
+			{ k: 'color', t: 'c', min: 0, max: 0xFFFFFF, d: 0xFFC890, l: 'Color' },
+			{ k: 'intensity', t: 'f', min: 0, max: 2, d: 0.6, s: 0.01, l: 'Intensity' },
+			{ k: 'speed', t: 'f', min: 1, max: 200, d: 25, s: 1, u: 'LED/s', l: 'Spread speed' },
+			{ k: 'softness', t: 'f', min: 1, max: 80, d: 18, s: 1, u: 'LED', l: 'Edge softness' },
+			{ k: 'travel', t: 'f', min: 0.05, max: 1, d: 0.5, s: 0.01, l: 'Travel' },
+			{ k: 'attack', t: 'f', min: 0, max: 10, d: 1.2, s: 0.1, u: 's', l: 'Attack' },
+			{ k: 'hold', t: 'f', min: 0, max: 20, d: 0.8, s: 0.1, u: 's', l: 'Hold' },
+			{ k: 'release', t: 'f', min: 0.1, max: 20, d: 5, s: 0.1, u: 's', l: 'Release' }
+		]
+	});
 
 	HELD_SCHEMA.layerByKey = {};
 	for (const L of HELD_SCHEMA.layers) HELD_SCHEMA.layerByKey[L.k] = L;

@@ -21,6 +21,7 @@ static const ParamDef AMBIENT_DEFS[]   = { HELD_AMBIENT_PARAMS(HELD_DEF_ENTRY) }
 static const ParamDef PIECEIN_DEFS[]   = { HELD_PIECEIN_PARAMS(HELD_DEF_ENTRY) };
 static const ParamDef PIECEOUT_DEFS[]  = { HELD_PIECEOUT_PARAMS(HELD_DEF_ENTRY) };
 static const ParamDef ALLIN_DEFS[]     = { HELD_ALLIN_PARAMS(HELD_DEF_ENTRY) };
+static const ParamDef STORYEND_DEFS[]  = { HELD_STORYEND_PARAMS(HELD_DEF_ENTRY) };
 const ParamDef STRIP_DEFS[Sp::COUNT]   = { HELD_STRIP_PARAMS(HELD_DEF_ENTRY) };
 #undef HELD_DEF_ENTRY
 
@@ -31,8 +32,9 @@ const GroupInfo GROUPS[GRP_COUNT] = {
   { "pieceIn",   PIECEIN_DEFS,   PcIn::COUNT },
   { "pieceOut",  PIECEOUT_DEFS,  PcOut::COUNT },
   { "allIn",     ALLIN_DEFS,     AllIn::COUNT },
+  { "storyEnd",  STORYEND_DEFS,  StEnd::COUNT },
 };
-const char* const EVENT_NAMES[EV_COUNT] = { "pieceIn", "pieceOut", "allIn" };
+const char* const EVENT_NAMES[EV_COUNT] = { "pieceIn", "pieceOut", "allIn", "storyEnd" };
 
 int findGroup(const char* key) {
   for (int g = 0; g < GRP_COUNT; g++) if (strcmp(GROUPS[g].key, key) == 0) return g;
@@ -137,12 +139,14 @@ static hf gradNoise(hf x, hf y, int px, int py, uint32_t seed) {
   return a + (b - a) * v;
 }
 
-static void buildProfile(int shape, hf width, hf* lut) {
+// returns the position (fraction of the width) of the waveform's highest point
+static hf buildProfile(int shape, hf width, hf* lut) {
   const Comp* comps = SHAPE_ECG;
   int n = sizeof(SHAPE_ECG) / sizeof(Comp);
   if (shape == 1) { comps = SHAPE_LUBDUB; n = sizeof(SHAPE_LUBDUB) / sizeof(Comp); }
   else if (shape == 2) { comps = SHAPE_BUMP; n = sizeof(SHAPE_BUMP) / sizeof(Comp); }
   hf peak = 0;
+  int peakJ = 0;
   for (int j = 0; j < PROFILE_N; j++) {
     hf s = (hf)j / (PROFILE_N - 1);
     hf v = 0;
@@ -154,9 +158,10 @@ static void buildProfile(int shape, hf width, hf* lut) {
     }
     v *= smoothstep(0, HC(0.06), s) * fadeOut(HC(0.94), 1, s);
     lut[j] = v;
-    if (v > peak) peak = v;
+    if (v > peak) { peak = v; peakJ = j; }
   }
   if (peak > 0) for (int j = 0; j < PROFILE_N; j++) lut[j] /= peak;
+  return (hf)peakJ / (PROFILE_N - 1);
 }
 
 static inline hf profileAt(const hf* lut, hf s) {
@@ -180,7 +185,7 @@ static inline void blendPx(hf* out, int j, hf r, hf g, hf b, hf alpha, uint8_t m
 }
 
 static inline uint8_t evGroup(uint8_t type) {
-  static const uint8_t groupOf[EV_COUNT] = { GRP_PIECE_IN, GRP_PIECE_OUT, GRP_ALL_IN };
+  static const uint8_t groupOf[EV_COUNT] = { GRP_PIECE_IN, GRP_PIECE_OUT, GRP_ALL_IN, GRP_STORY_END };
   return groupOf[type];
 }
 
@@ -200,6 +205,8 @@ Engine::Engine() {
   _vals[GRP_PIECE_IN] = _pieceIn;    _res[GRP_PIECE_IN] = _rPieceIn;
   _vals[GRP_PIECE_OUT] = _pieceOut;  _res[GRP_PIECE_OUT] = _rPieceOut;
   _vals[GRP_ALL_IN] = _allIn;        _res[GRP_ALL_IN] = _rAllIn;
+  _vals[GRP_STORY_END] = _storyEnd;  _res[GRP_STORY_END] = _rStoryEnd;
+  _lutPeak = 0;
   _lutShape = -1;
   _lutWidth = -1;
   setDefaults();
@@ -233,6 +240,8 @@ void Engine::reset() {
   _count = 0;
   _rng = 0x2545F491U;
   _hbPhase = HC(0.9);  // first beat arrives shortly after start
+  _extClock = false;
+  _pendingBeats = 0;
   _numHbPulses = 0;
   _numTwinkles = 0;
   _numEvents = 0;
@@ -410,6 +419,7 @@ Engine::Timeline Engine::aiTimeline() const {
 
 hf Engine::eventDuration(const Event& ev) const {
   if (ev.type == EV_ALL_IN) return aiTimeline().end;
+  if (ev.type == EV_STORY_END) return _rStoryEnd[StEnd::attack] + _rStoryEnd[StEnd::hold] + _rStoryEnd[StEnd::release];
   if (ev.type == EV_PIECE_IN) return _rPieceIn[PcIn::duration];
   return _rPieceOut[PcOut::duration];
 }
@@ -421,7 +431,7 @@ EventInfo Engine::eventInfo(uint8_t i) {
 }
 
 // ------------------------------------------------------------------ inputs
-void Engine::setPieces(uint32_t mask) {
+void Engine::setPieces(uint32_t mask, bool events) {
   int np = (int)_global[Gp::numPieces].a;
   mask &= (1U << np) - 1;
   int n = 0;
@@ -429,10 +439,11 @@ void Engine::setPieces(uint32_t mask) {
   int nOld = _count;
   _mask = mask;
   _count = n;
-  if (n == nOld || _global[Gp::autoEvents].a == 0) return;
+  if (!events || n == nOld || _global[Gp::autoEvents].a == 0) return;
   Event* ai = nullptr;  // a running (not cancelling) last-piece animation
   for (uint8_t e = 0; e < _numEvents; e++) if (_events[e].type == EV_ALL_IN && _events[e].cancelAge < 0) ai = &_events[e];
-  if (n >= np && nOld < np) {
+  bool allInOnCount = _global[Gp::allInTrigger].a == 0;  // otherwise allIn waits for the audio's story start
+  if (n >= np && nOld < np && allInOnCount) {
     if (!ai) trigger(EV_ALL_IN);
   } else if (n > nOld) {
     trigger(EV_PIECE_IN);
@@ -500,6 +511,17 @@ void Engine::cancel(uint8_t type) {
   }
 }
 
+void Engine::setExternalClock(bool on) {
+  if (on == _extClock) return;
+  _extClock = on;
+  _pendingBeats = 0;
+  if (!on) _hbPhase = 0;  // the internal clock resumes a full period after the last external beat
+}
+
+void Engine::beat() {
+  if (_pendingBeats < 4) _pendingBeats++;
+}
+
 void Engine::clearEvents() {
   _numEvents = 0;
   _numSparkles = 0;
@@ -534,6 +556,7 @@ void Engine::render(uint8_t si, hf* out) {
     if (ev.type == EV_PIECE_IN) renderPieceIn(ev, si, v);
     else if (ev.type == EV_PIECE_OUT) renderPieceOut(ev, si, v);
     else if (ev.type == EV_ALL_IN) renderAllIn(ev, si, v);
+    else if (ev.type == EV_STORY_END) renderStoryEnd(ev, si, v);
   }
   for (int j = 0; j < 3 * Lv; j++) v[j] = clamp01(v[j]);
   tile(si, Lv, v, out);
@@ -542,28 +565,37 @@ void Engine::render(uint8_t si, hf* out) {
 // ------------------------------------------------------------------ heartbeat
 void Engine::tickHeartbeat(hf dt) {
   const hf* H = _rHeartbeat;
-  if (H[Hb::enabled] == 0) { _numHbPulses = 0; return; }
+  if (H[Hb::enabled] == 0) { _numHbPulses = 0; _pendingBeats = 0; return; }
   int shape = (int)H[Hb::shape];
   if (shape != _lutShape || H[Hb::pulseWidth] != _lutWidth) {
-    buildProfile(shape, H[Hb::pulseWidth], _lut);
+    _lutPeak = buildProfile(shape, H[Hb::pulseWidth], _lut);
     _lutShape = shape;
     _lutWidth = H[Hb::pulseWidth];
   }
   hf period = 60 / H[Hb::bpm];
   for (int p = 0; p < _numHbPulses; p++) _hbPulses[p] += H[Hb::pulseSpeed] * dt;
-  _hbPhase += dt / period;
-  while (_hbPhase >= 1) {
-    _hbPhase -= 1;
-    if (_numHbPulses >= MAX_HB_PULSES) {
-      for (int p = 1; p < _numHbPulses; p++) _hbPulses[p - 1] = _hbPulses[p];
-      _numHbPulses--;
+  if (_extClock) {
+    // externally clocked: the waveform's peak (the lub) is at the origin the moment the beat arrives
+    for (; _pendingBeats > 0; _pendingBeats--) pushPulse(_lutPeak * H[Hb::pulseWidth]);
+  } else {
+    _hbPhase += dt / period;
+    while (_hbPhase >= 1) {
+      _hbPhase -= 1;
+      pushPulse(_hbPhase * period * H[Hb::pulseSpeed]);
     }
-    _hbPulses[_numHbPulses++] = _hbPhase * period * H[Hb::pulseSpeed];
   }
   hf limit = reach(H[Hb::travel]) + H[Hb::pulseWidth];
   int w = 0;
   for (int p = 0; p < _numHbPulses; p++) if (_hbPulses[p] <= limit) _hbPulses[w++] = _hbPulses[p];
   _numHbPulses = w;
+}
+
+void Engine::pushPulse(hf x) {
+  if (_numHbPulses >= MAX_HB_PULSES) {
+    for (int p = 1; p < _numHbPulses; p++) _hbPulses[p - 1] = _hbPulses[p];
+    _numHbPulses--;
+  }
+  _hbPulses[_numHbPulses++] = x;
 }
 
 hf Engine::hbSum(hf d, hf xmax, hf taper) const {
@@ -890,6 +922,32 @@ void Engine::renderAllIn(const Event& ev, uint8_t si, hf* out) {
 
   hf ia = 1 - occ * op;
   for (int j = 0; j < 3 * L; j++) out[j] = out[j] * ia + sc[j] * op;
+}
+
+// ------------------------------------------------------------------ story end
+// A warm glow spreading from the origin and fading: the "exhale" after a story.
+void Engine::renderStoryEnd(const Event& ev, uint8_t si, hf* out) {
+  const hf* P = _rStoryEnd;
+  int L = vlen(si);
+  hf V = (hf)L;
+  hf a = P[StEnd::attack], h = P[StEnd::hold];
+  hf env = (a > 0 ? smoothstep(0, a, ev.age) : HC(1)) * fadeOut(a + h, a + h + P[StEnd::release], ev.age);
+  hf gain = P[StEnd::intensity] * P[StEnd::opacity] * env;
+  if (gain <= 0) return;
+  hf front = P[StEnd::speed] * ev.age;
+  hf soft = P[StEnd::softness];
+  hf xmax = P[StEnd::travel] * V;
+  hf taper = minh(soft, xmax * HC(0.25));
+  RGBf col = unpack(P[StEnd::color]);
+  uint8_t mode = (uint8_t)P[StEnd::blend];
+  for (int i = 0; i < L; i++) {
+    hf d = minh((hf)i, V - i);
+    if (d > xmax) continue;
+    hf k = gain * smoothstep(d, d + soft, front) * fadeOut(xmax - taper, xmax, d);
+    if (k <= 0) continue;
+    hf r = col.r * k, g = col.g * k, b = col.b * k;
+    blendPx(out, 3 * i, r, g, b, minh(1, maxh(r, maxh(g, b))), mode);
+  }
 }
 
 } // namespace held

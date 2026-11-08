@@ -34,7 +34,7 @@
 	const PI = 3.141592653589793;
 	const BLEND_NORMAL = 0, BLEND_ADD = 1, BLEND_SCREEN = 2;
 	const DIR_BOTH = 0, DIR_FWD = 1, DIR_BWD = 2;
-	const EV_TYPES = ['pieceIn', 'pieceOut', 'allIn'];
+	const EV_TYPES = ['pieceIn', 'pieceOut', 'allIn', 'storyEnd'];
 	const NOISE_TP = 4096;          // noise lattice period along time; the time accumulator wraps here seamlessly
 
 	// waveform components: [centre (fraction of width), sigma (fraction of width), amplitude]
@@ -114,9 +114,10 @@
 		return a + (b - a) * v;
 	}
 
+	// returns the position (fraction of the width) of the waveform's highest point
 	function buildProfile(shape, width, lut) {
 		const comps = SHAPES[shape] || SHAPES[0];
-		let peak = 0;
+		let peak = 0, peakJ = 0;
 		for (let j = 0; j < PROFILE_N; j++) {
 			const s = j / (PROFILE_N - 1);
 			let v = 0;
@@ -128,9 +129,10 @@
 			}
 			v *= smoothstep(0, 0.06, s) * fadeOut(0.94, 1, s);
 			lut[j] = v;
-			if (v > peak) peak = v;
+			if (v > peak) { peak = v; peakJ = j; }
 		}
 		if (peak > 0) for (let j = 0; j < PROFILE_N; j++) lut[j] /= peak;
+		return peakJ / (PROFILE_N - 1);
 	}
 
 	function profileAt(lut, s) {
@@ -206,7 +208,7 @@
 			this.params = SCHEMA.defaults();
 			this.strips = [SCHEMA.defaultStrip(0)];
 			this.lut = new Float64Array(PROFILE_N);
-			this.lutShape = -1; this.lutWidth = -1;
+			this.lutShape = -1; this.lutWidth = -1; this.lutPeak = 0;
 			this.scratch = new Float64Array(0);
 			this.vbuf = new Float64Array(0);
 			this.progs = new Map();     // expression source -> compiled program (null if invalid)
@@ -223,6 +225,8 @@
 			this.count = 0;
 			this.rng = 0x2545F491;
 			this.hbPhase = 0.9;            // first beat arrives shortly after start
+			this.extClock = false;         // heartbeat follows beat() calls instead of its own BPM
+			this.pendingBeats = 0;
 			this.hbPulses = [];            // leading-edge distance from origin, LEDs
 			this.twinkles = [];
 			this.twAcc = this.strips.map(() => 0);
@@ -271,7 +275,8 @@
 		}
 
 		// ---- inputs
-		setPieces(mask) {
+		// events = false adopts the count silently (e.g. syncing to the audio board after a reboot)
+		setPieces(mask, events = true) {
 			const np = this.params.global.numPieces;
 			mask = (mask >>> 0) & ((1 << np) - 1);
 			let n = 0;
@@ -279,10 +284,11 @@
 			const nOld = this.count;
 			this.mask = mask;
 			this.count = n;
-			if (n === nOld || !this.params.global.autoEvents) return;
+			if (!events || n === nOld || !this.params.global.autoEvents) return;
 			let ai = null;   // a running (not cancelling) last-piece animation
 			for (const ev of this.events) if (ev.type === 'allIn' && ev.cancelAge < 0) ai = ev;
-			if (n >= np && nOld < np) {
+			const allInOnCount = this.params.global.allInTrigger === 0;   // otherwise allIn waits for the audio's story start
+			if (n >= np && nOld < np && allInOnCount) {
 				if (!ai) this.trigger('allIn');
 			} else if (n > nOld) {
 				this.trigger('pieceIn');
@@ -335,6 +341,20 @@
 			}
 		}
 
+		// External heartbeat clock: while on, the heartbeat emits one pulse per beat() call (e.g. the
+		// audio board's BEAT messages) instead of following its own BPM.
+		setExternalClock(on) {
+			on = !!on;
+			if (on === this.extClock) return;
+			this.extClock = on;
+			this.pendingBeats = 0;
+			if (!on) this.hbPhase = 0;   // the internal clock resumes a full period after the last external beat
+		}
+
+		beat() {
+			if (this.pendingBeats < 4) this.pendingBeats++;
+		}
+
 		clearEvents() {
 			this.events = [];
 			this.sparkles = [];
@@ -377,6 +397,7 @@
 				if (ev.type === 'pieceIn') this._renderPieceIn(ev, si, v);
 				else if (ev.type === 'pieceOut') this._renderPieceOut(ev, si, v);
 				else if (ev.type === 'allIn') this._renderAllIn(ev, si, v);
+				else if (ev.type === 'storyEnd') this._renderStoryEnd(ev, si, v);
 			}
 			for (let j = 0; j < 3 * Lv; j++) v[j] = clamp01(v[j]);
 			this._tile(st, Lv, v, out);
@@ -475,30 +496,40 @@
 
 		_eventDuration(ev) {
 			if (ev.type === 'allIn') return this._aiTimeline(this.R.allIn).end;
+			if (ev.type === 'storyEnd') return this.R.storyEnd.attack + this.R.storyEnd.hold + this.R.storyEnd.release;
 			return this.R[ev.type].duration;
 		}
 
 		// ---------------------------------------------------------------- heartbeat
 		_tickHeartbeat(dt) {
 			const H = this.R.heartbeat;
-			if (!H.enabled) { this.hbPulses = []; return; }
+			if (!H.enabled) { this.hbPulses = []; this.pendingBeats = 0; return; }
 			const shape = H.shape | 0;
 			if (shape !== this.lutShape || H.pulseWidth !== this.lutWidth) {
-				buildProfile(shape, H.pulseWidth, this.lut);
+				this.lutPeak = buildProfile(shape, H.pulseWidth, this.lut);
 				this.lutShape = shape; this.lutWidth = H.pulseWidth;
 			}
 			const period = 60 / H.bpm;
 			for (let p = 0; p < this.hbPulses.length; p++) this.hbPulses[p] += H.pulseSpeed * dt;
-			this.hbPhase += dt / period;
-			while (this.hbPhase >= 1) {
-				this.hbPhase -= 1;
-				if (this.hbPulses.length >= MAX_HB_PULSES) this.hbPulses.shift();
-				this.hbPulses.push(this.hbPhase * period * H.pulseSpeed);
+			if (this.extClock) {
+				// externally clocked: the waveform's peak (the lub) is at the origin the moment the beat arrives
+				for (; this.pendingBeats > 0; this.pendingBeats--) this._pushPulse(this.lutPeak * H.pulseWidth);
+			} else {
+				this.hbPhase += dt / period;
+				while (this.hbPhase >= 1) {
+					this.hbPhase -= 1;
+					this._pushPulse(this.hbPhase * period * H.pulseSpeed);
+				}
 			}
 			const limit = this._reach(H.travel) + H.pulseWidth;
 			let w = 0;
 			for (let p = 0; p < this.hbPulses.length; p++) if (this.hbPulses[p] <= limit) this.hbPulses[w++] = this.hbPulses[p];
 			this.hbPulses.length = w;
+		}
+
+		_pushPulse(x) {
+			if (this.hbPulses.length >= MAX_HB_PULSES) this.hbPulses.shift();
+			this.hbPulses.push(x);
 		}
 
 		_hbSum(d, xmax, H, taper) {
@@ -802,6 +833,28 @@
 			for (let j = 0; j < 3 * L; j++) out[j] = out[j] * ia + sc[j] * op;
 		}
 	}
+
+	// A warm glow spreading from the origin and fading: the "exhale" after a story.
+	HeldEngine.prototype._renderStoryEnd = function (ev, si, out) {
+		const P = this.R.storyEnd;
+		const L = this._vlen(this.strips[si]), V = L;
+		const a = P.attack, h = P.hold;
+		const env = (a > 0 ? smoothstep(0, a, ev.age) : 1) * fadeOut(a + h, a + h + P.release, ev.age);
+		const gain = P.intensity * P.opacity * env;
+		if (gain <= 0) return;
+		const front = P.speed * ev.age, soft = P.softness;
+		const xmax = P.travel * V;
+		const taper = Math.min(soft, xmax * 0.25);
+		const col = unpack(P.color), mode = P.blend | 0;
+		for (let i = 0; i < L; i++) {
+			const d = Math.min(i, V - i);
+			if (d > xmax) continue;
+			const k = gain * smoothstep(d, d + soft, front) * fadeOut(xmax - taper, xmax, d);
+			if (k <= 0) continue;
+			const r = col[0] * k, g = col[1] * k, b = col[2] * k;
+			blendPx(out, 3 * i, r, g, b, Math.min(1, Math.max(r, g, b)), mode);
+		}
+	};
 
 	HeldEngine.SCHEMA = SCHEMA;
 	HeldEngine.EVENT_TYPES = EV_TYPES;

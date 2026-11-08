@@ -57,10 +57,11 @@ namespace Am { enum : uint8_t { HELD_AMBIENT_PARAMS(HELD_ENUM_ENTRY)   COUNT }; 
 namespace PcIn { enum : uint8_t { HELD_PIECEIN_PARAMS(HELD_ENUM_ENTRY)   COUNT }; }
 namespace PcOut { enum : uint8_t { HELD_PIECEOUT_PARAMS(HELD_ENUM_ENTRY)  COUNT }; }
 namespace AllIn { enum : uint8_t { HELD_ALLIN_PARAMS(HELD_ENUM_ENTRY)     COUNT }; }
+namespace StEnd { enum : uint8_t { HELD_STORYEND_PARAMS(HELD_ENUM_ENTRY)  COUNT }; }
 #undef HELD_ENUM_ENTRY
 
-enum Group : uint8_t { GRP_GLOBAL, GRP_HEARTBEAT, GRP_AMBIENT, GRP_PIECE_IN, GRP_PIECE_OUT, GRP_ALL_IN, GRP_COUNT };
-enum EventType : uint8_t { EV_PIECE_IN, EV_PIECE_OUT, EV_ALL_IN, EV_COUNT };
+enum Group : uint8_t { GRP_GLOBAL, GRP_HEARTBEAT, GRP_AMBIENT, GRP_PIECE_IN, GRP_PIECE_OUT, GRP_ALL_IN, GRP_STORY_END, GRP_COUNT };
+enum EventType : uint8_t { EV_PIECE_IN, EV_PIECE_OUT, EV_ALL_IN, EV_STORY_END, EV_COUNT };
 
 struct GroupInfo {
   const char* key;
@@ -109,7 +110,13 @@ class Engine {
     int stripLeds(uint8_t strip) const { return strip < _numStrips ? (int)_strips[strip][Sp::leds] : 0; }
 
     // ---- inputs
-    void setPieces(uint32_t mask);
+    // events = false adopts the count silently (e.g. syncing to the audio board after a reboot)
+    void setPieces(uint32_t mask, bool events = true);
+    // External heartbeat clock: while on, the heartbeat emits one pulse per beat() call (e.g. the
+    // audio board's BEAT messages) instead of following its own BPM.
+    void setExternalClock(bool on);
+    bool externalClock() const { return _extClock; }
+    void beat();
     bool trigger(uint8_t type);
     void cancel(uint8_t type);
     void clearEvents();
@@ -133,8 +140,8 @@ class Engine {
     struct Timeline { hf pulseEnd, convStart, holdEnd, period, end; };
     struct ExprSlot { bool used; ExprProgram prog; std::string src; };
 
-    ParamVal _global[Gp::COUNT], _heartbeat[Hb::COUNT], _ambient[Am::COUNT], _pieceIn[PcIn::COUNT], _pieceOut[PcOut::COUNT], _allIn[AllIn::COUNT];
-    hf _rGlobal[Gp::COUNT], _rHeartbeat[Hb::COUNT], _rAmbient[Am::COUNT], _rPieceIn[PcIn::COUNT], _rPieceOut[PcOut::COUNT], _rAllIn[AllIn::COUNT];
+    ParamVal _global[Gp::COUNT], _heartbeat[Hb::COUNT], _ambient[Am::COUNT], _pieceIn[PcIn::COUNT], _pieceOut[PcOut::COUNT], _allIn[AllIn::COUNT], _storyEnd[StEnd::COUNT];
+    hf _rGlobal[Gp::COUNT], _rHeartbeat[Hb::COUNT], _rAmbient[Am::COUNT], _rPieceIn[PcIn::COUNT], _rPieceOut[PcOut::COUNT], _rAllIn[AllIn::COUNT], _rStoryEnd[StEnd::COUNT];
     ParamVal* _vals[GRP_COUNT];
     hf* _res[GRP_COUNT];
 
@@ -149,6 +156,9 @@ class Engine {
     uint32_t _rng;
 
     hf _hbPhase;
+    bool _extClock;
+    int _pendingBeats;
+    hf _lutPeak;                // waveform peak position, fraction of the width
     hf _hbPulses[MAX_HB_PULSES];
     int _numHbPulses;
     hf _lut[PROFILE_N];
@@ -199,6 +209,8 @@ class Engine {
     void renderPieceOut(const Event& ev, uint8_t si, hf* out);
     void tickAllIn(Event& ev, hf dt);
     void renderAllIn(const Event& ev, uint8_t si, hf* out);
+    void renderStoryEnd(const Event& ev, uint8_t si, hf* out);
+    void pushPulse(hf x);
 };
 
 } // namespace held
