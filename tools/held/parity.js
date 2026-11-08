@@ -13,43 +13,12 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
+const { buildNative } = require('./native.js');
 const HeldEngine = require('../../wled00/data/held/engine.js');
 
 const SRC = path.join(__dirname, 'parity_main.cpp');
 const TOL = 1e-4;
-
-function which(cmd) {
-  const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { encoding: 'utf8' });
-  return r.status === 0 ? r.stdout.split(/\r?\n/)[0].trim() : null;
-}
-
-function compile(outDir) {
-  const exe = path.join(outDir, process.platform === 'win32' ? 'held_parity.exe' : 'held_parity');
-  for (const cxx of ['g++', 'clang++']) {
-    if (!which(cxx)) continue;
-    execFileSync(cxx, ['-O2', '-std=c++17', '-DHELD_REAL=double', '-o', exe, SRC], { stdio: 'inherit' });
-    return exe;
-  }
-  if (process.platform === 'win32') {
-    const vswhere = path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
-    if (fs.existsSync(vswhere)) {
-      const inst = execFileSync(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], { encoding: 'utf8' }).trim();
-      const vcvars = inst && path.join(inst, 'VC', 'Auxiliary', 'Build', 'vcvars64.bat');
-      if (vcvars && fs.existsSync(vcvars)) {
-        const bat = path.join(outDir, 'build.bat');
-        fs.writeFileSync(bat, `@echo off\r\ncall "${vcvars}" >nul\r\ncd /d "${outDir}"\r\ncl /nologo /O2 /EHsc /std:c++17 /DHELD_REAL=double /Fe"${exe}" "${SRC}" >build.log\r\n`);
-        const r = spawnSync('cmd.exe', ['/d', '/c', bat], { encoding: 'utf8' });
-        if (r.status !== 0) {
-          console.error(fs.readFileSync(path.join(outDir, 'build.log'), 'utf8'));
-          throw new Error('MSVC build failed');
-        }
-        return exe;
-      }
-    }
-  }
-  return null;
-}
 
 // ---- scenarios: [setup commands, timeline of [time, command]]
 const FPS = 40;
@@ -103,6 +72,16 @@ const SCENARIOS = [
       [1, 'pieces 3'], [2, 'pieces 63'], [4, 'pieces 31'], [6, 'pieces 63'], [14, 'pieces 15'], [15, 'pieces 63'],
       [20, 'trigger pieceIn'], [21, 'pieces 1']
     ]
+  },
+  {
+    name: 'audio link: external beats, silent sync, story-start mode, story end',
+    seconds: 24,
+    setup: ['strips 2', 'strip 0 leds 100', 'strip 0 origin 30', 'strip 1 leds 70', 'param global allInTrigger 1 1', 'param heartbeat shape 0 0'],
+    timeline: [
+      [0.5, 'sync 7'], [1, 'extclock 1'], [2.0, 'beat'], [2.9, 'beat'], [3.8, 'beat'], [4.65, 'beat'], [5.5, 'beat'], [6.3, 'beat'], [7.1, 'beat'], [7.9, 'beat'], [8.75, 'beat'], [13.1, 'beat'], [13.95, 'beat'],
+      [6, 'pieces 63'], [7, 'trigger allIn'], [9.5, 'extclock 0'], [12, 'param heartbeat shape 1 1'], [13, 'extclock 1'],
+      [15, 'trigger storyEnd'], [16, 'pieces 0'], [17, 'param global allInTrigger 0 0'], [18, 'pieces 63'], [19, 'trigger storyEnd']
+    ]
   }
 ];
 
@@ -119,6 +98,9 @@ function runJs(sc) {
       case 'expr': { const src = cmd.split(/\s+/).slice(3).join(' '); e.setParams({ [p[1]]: { [p[2]]: src } }); if (e.exprErrors[p[1] + '.' + p[2]]) throw new Error('JS rejected ' + cmd); break; }
       case 'param': (params[p[1]] = params[p[1]] || {})[p[2]] = [+p[3], +p[4]]; e.setParams({ [p[1]]: { [p[2]]: [+p[3], +p[4]] } }); break;
       case 'pieces': e.setPieces(+p[1]); break;
+      case 'sync': e.setPieces(+p[1], false); break;
+      case 'extclock': e.setExternalClock(+p[1] !== 0); break;
+      case 'beat': e.beat(); break;
       case 'trigger': e.trigger(p[1]); break;
       case 'cancel': e.cancel(p[1]); break;
     }
@@ -144,7 +126,7 @@ function runJs(sc) {
 
 function main() {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-parity-'));
-  const exe = compile(outDir);
+  const exe = buildNative(SRC, outDir, 'held_parity');
   if (!exe) { console.log('held parity: no host C++ compiler found (g++, clang++ or MSVC) - skipped'); process.exit(2); }
   let ok = true;
   for (const sc of SCENARIOS) {

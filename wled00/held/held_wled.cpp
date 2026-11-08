@@ -5,6 +5,7 @@
 #include "../wled.h"
 #include "held.h"
 #include "held_core.h"
+#include "held_link.h"
 
 #ifdef WLED_ENABLE_HELD
 #ifndef ARDUINO_ARCH_ESP32
@@ -14,6 +15,7 @@
 using namespace held;
 
 static Engine engine;
+static Link audioLink(engine);   // serial messages from the audio brain (see held_link.h)
 static std::vector<hf> renderBuf;
 static uint8_t fxId = 255;
 static bool playing = true;
@@ -29,6 +31,22 @@ static constexpr float MAX_FRAME_DT = 0.1f;             // s; longer stalls (FS 
 static constexpr unsigned long SEG_CHECK_INTERVAL = 1000; // ms
 static constexpr TickType_t LOCK_WAIT = pdMS_TO_TICKS(50);
 static constexpr uint8_t JSON_LOCK_HELD = 40;
+
+// Audio brain link: UART1 on these pins, 115200 8N1 (held-electronics/docs/Held_Lighting_Serial_Messages.md).
+// Wire brain GPIO4 (TX) -> HELD_LINK_RX, brain GPIO18 (RX) <- HELD_LINK_TX, and GND. -1 disables.
+#ifndef HELD_LINK_RX
+  #define HELD_LINK_RX 32
+#endif
+#ifndef HELD_LINK_TX
+  #define HELD_LINK_TX 33
+#endif
+#ifndef HELD_LINK_BAUD
+  #define HELD_LINK_BAUD 115200
+#endif
+static HardwareSerial& linkSerial = Serial1;
+static bool linkRx = false, linkTx = false;
+static unsigned long lastLinkPoll = 0;
+static constexpr unsigned long LINK_POLL_INTERVAL = 50;   // ms; beat-timeout check
 
 static const char HELD_FILE[] PROGMEM = "/held.json";
 static const char _data_FX_MODE_HELD[] PROGMEM = "Held@;;;1";
@@ -208,6 +226,13 @@ static bool applyCommand(JsonObject h) {
     for (JsonVariant t : trig.as<JsonArray>()) { int e = findEvent(t | ""); if (e >= 0) engine.trigger(e); }
   }
 
+  // "link": a line (or array of lines) handled exactly as if it came from the audio brain
+  JsonVariant linkLines = h[F("link")];
+  if (linkLines.is<const char*>()) audioLink.handleLine(linkLines.as<const char*>(), millis());
+  else if (linkLines.is<JsonArray>()) {
+    for (JsonVariant v : linkLines.as<JsonArray>()) if (v.is<const char*>()) audioLink.handleLine(v.as<const char*>(), millis());
+  }
+
   if (h[F("save")] | false) needsSave = true;
   return cfgChanged;
 }
@@ -238,6 +263,30 @@ void heldSerialize(JsonObject root, bool full) {
     if (seg.isActive() && seg.mode != fxId) active = false;
   }
   root[F("active")] = active;
+  {
+    const LinkStatus& ls = audioLink.status();
+    uint32_t now = millis();
+    JsonObject lo = root.createNestedObject(F("link"));
+    lo[F("uart")] = linkRx;
+    lo[F("rx")] = HELD_LINK_RX;
+    lo[F("tx")] = linkTx ? HELD_LINK_TX : -1;
+    lo[F("ext")] = engine.externalClock();
+    lo[F("lineAgo")] = ls.lastLineMs ? (long)(now - ls.lastLineMs) : -1L;
+    lo[F("beatAgo")] = ls.lastBeatMs ? (long)(now - ls.lastBeatMs) : -1L;
+    lo[F("lines")] = ls.lines;
+    lo[F("unknown")] = ls.unknown;
+    lo[F("beats")] = ls.beats;
+    lo[F("missed")] = ls.missed;
+    lo[F("beat")] = ls.beatN;
+    lo[F("bpm")] = ls.bpm;
+    lo[F("dub")] = ls.dubMs;
+    lo[F("next")] = ls.nextMs;
+    lo[F("seated")] = ls.seated;
+    lo[F("required")] = ls.required;
+    lo[F("story")] = ls.story;
+    lo[F("playing")] = ls.storyPlaying;
+    lo[F("last")] = (char*)ls.last;  // copied
+  }
   if (exprError[0]) {
     root[F("exprError")] = (char*)exprError;  // copied
     exprError[0] = 0;
@@ -305,6 +354,48 @@ static void loadConfig() {
   releaseJSONBufferLock();
 }
 
+// ------------------------------------------------------------------ audio brain link
+static void linkSetup() {
+  int8_t rx = HELD_LINK_RX, tx = HELD_LINK_TX;
+  if (rx < 0) { DEBUG_PRINTLN(F("Held: audio link disabled")); return; }
+  if (!PinManager::allocatePin(rx, false, PinOwner::UM_Unspecified)) {
+    DEBUG_PRINTF_P(PSTR("Held: audio link RX pin %d unavailable\n"), rx);
+    return;
+  }
+  if (tx >= 0 && !PinManager::allocatePin(tx, true, PinOwner::UM_Unspecified)) {
+    DEBUG_PRINTF_P(PSTR("Held: audio link TX pin %d unavailable, receive only\n"), tx);
+    tx = -1;
+  }
+  linkSerial.begin(HELD_LINK_BAUD, SERIAL_8N1, rx, tx);
+  linkRx = true;
+  linkTx = tx >= 0;
+  EngineLock lock(LOCK_WAIT);
+  if (lock.ok()) {
+    audioLink.queueReply("HELLO");   // a brain that answers with COUNT lets the lights resync after a reboot
+    audioLink.queueReply("LOG Held lighting ready");
+  }
+}
+
+// Read the UART, run the beat timeout, and send replies. Lines take ~2 ms each at 115200 baud;
+// the UART buffers them between main-loop iterations.
+static void linkLoop() {
+  bool pending = linkRx && linkSerial.available();
+  if (!pending && millis() - lastLinkPoll < LINK_POLL_INTERVAL) return;
+  lastLinkPoll = millis();
+  char out[LINK_REPLY_MAX][LINK_LINE_MAX];
+  int nOut = 0;
+  {
+    EngineLock lock(LOCK_WAIT);
+    if (!lock.ok()) return;
+    uint32_t now = millis();
+    if (linkRx) while (linkSerial.available()) audioLink.feed((char)linkSerial.read(), now);
+    audioLink.poll(now);
+    while (nOut < LINK_REPLY_MAX && audioLink.popReply(out[nOut], LINK_LINE_MAX)) nOut++;
+  }
+  if (!linkTx) return;
+  for (int i = 0; i < nOut; i++) { linkSerial.print(out[i]); linkSerial.print('\n'); }
+}
+
 // keep the engine's strip count in line with the segments, and (optionally) every segment on Held
 static void checkSegments() {
   unsigned n = 0;
@@ -328,11 +419,13 @@ void heldSetup() {
   DEBUG_PRINTF_P(PSTR("Held: effect id %u\n"), fxId);
   loadConfig();
   heldInputSetup();
+  linkSetup();
   checkSegments();
 }
 
 void heldLoop() {
   heldInputLoop();
+  linkLoop();
   if (needsSave) {
     needsSave = false;
     saveConfig();

@@ -40,7 +40,7 @@ describe('Held schema matches the firmware param tables', () => {
   };
   it('global', () => compare('HELD_GLOBAL_PARAMS', SCHEMA.global));
   it('strip', () => compare('HELD_STRIP_PARAMS', SCHEMA.strip));
-  for (const [macro, key] of [['HELD_HEARTBEAT_PARAMS', 'heartbeat'], ['HELD_AMBIENT_PARAMS', 'ambient'], ['HELD_PIECEIN_PARAMS', 'pieceIn'], ['HELD_PIECEOUT_PARAMS', 'pieceOut'], ['HELD_ALLIN_PARAMS', 'allIn']]) {
+  for (const [macro, key] of [['HELD_HEARTBEAT_PARAMS', 'heartbeat'], ['HELD_AMBIENT_PARAMS', 'ambient'], ['HELD_PIECEIN_PARAMS', 'pieceIn'], ['HELD_PIECEOUT_PARAMS', 'pieceOut'], ['HELD_ALLIN_PARAMS', 'allIn'], ['HELD_STORYEND_PARAMS', 'storyEnd']]) {
     it(key, () => compare(macro, SCHEMA.layerByKey[key].p));
   }
   it('every event layer has "enabled" first (the firmware relies on it)', () => {
@@ -256,6 +256,22 @@ describe('Held release grace and noise pan', () => {
     run(e, 1);
     const b = frame(e);
     for (let i = 10; i < 120; i++) assert.ok(Math.abs(b[3 * i] - a[3 * (i - 10)]) < 1e-9, `led ${i}`);
+  });
+});
+
+describe('Held audio link', () => {
+  it('parses serial messages from the audio brain and drives the engine (native C++; skipped without a host compiler)', (t) => {
+    const os = require('node:os');
+    const { buildNative } = require('./held/native.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'held-link-'));
+    try {
+      const exe = buildNative(path.join(__dirname, 'held', 'link_test.cpp'), dir, 'held_link_test');
+      if (!exe) return t.skip('no host C++ compiler');
+      const r = spawnSync(exe, [], { encoding: 'utf8' });
+      assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
