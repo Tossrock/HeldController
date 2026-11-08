@@ -43,6 +43,7 @@
 			<div id="status">
 				<div class="lvl"><span>Level</span><div class="bar"><i id="lvlBar"></i></div><b id="lvlTxt">0.00</b></div>
 				<div id="readout"></div>
+				<div id="linkTxt" class="muted small" hidden></div>
 				<div id="evList"></div>
 			</div>
 		</section>
@@ -63,6 +64,7 @@
 					<button data-trig="pieceIn">Piece in</button>
 					<button data-trig="pieceOut">Piece removed</button>
 					<button data-trig="allIn" class="accent">Last piece</button>
+					<button data-trig="storyEnd">Story end</button>
 				</div>
 				<p class="muted small">Triggers play the event without changing the piece count. Toggling pieces above triggers them automatically.</p>
 			</div>

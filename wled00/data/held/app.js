@@ -576,9 +576,54 @@
 		p.appendChild(row);
 	}
 
+	// one-line description of the audio brain link state reported by the device
+	function linkSummary(lk) {
+		if (!lk.uart && lk.lineAgo < 0) return 'no UART (set HELD_LINK_RX)';
+		if (lk.lineAgo < 0) return `waiting for the audio board on GPIO${lk.rx}`;
+		const parts = [];
+		if (lk.beats) parts.push(lk.beatAgo >= 0 && lk.beatAgo < 3000 ? `${lk.bpm.toFixed(1)} BPM, beat ${lk.beat}` : `no BEAT for ${Math.round(lk.beatAgo / 1000)} s`);
+		if (lk.required > 0) parts.push(`${lk.seated} / ${lk.required} pieces`);
+		if (lk.story) parts.push(`story ${lk.story} ${lk.playing ? 'playing' : 'ended'}`);
+		if (lk.missed) parts.push(`${lk.missed} beats missed`);
+		if (lk.unknown) parts.push(`${lk.unknown} lines ignored`);
+		if (!parts.length) parts.push(`last line ${Math.round(lk.lineAgo / 1000)} s ago`);
+		return parts.join(' · ');
+	}
+
 	function renderSetup(p) {
 		p.appendChild(el('h4', '', 'Pieces & level'));
-		for (const def of S.global) p.appendChild(control('global', def));
+		let grp = null;
+		for (const def of S.global) {
+			if ((def.g || null) !== grp) { grp = def.g || null; if (grp) p.appendChild(el('h4', '', grp)); }
+			p.appendChild(control('global', def));
+		}
+		if (app.device !== null) {
+			p.appendChild(el('p', 'lhelp', 'Status and testing. The device reads the audio board on UART1; lines sent here are handled exactly as if they came from it, e.g. "BEAT 7 62.0 355 968", "COUNT 3 6", "STORY START 1", "STORY END 1".'));
+			const st = el('p', 'lhelp');
+			const showLink = () => { const lk = app.devState && app.devState.link; st.textContent = lk ? linkSummary(lk) + (lk.last ? ` · last: "${lk.last}"` : '') : 'no link information from this device'; };
+			showLink();
+			p.appendChild(st);
+			const f = el('div', 'field');
+			const line = el('input');
+			line.type = 'text';
+			line.placeholder = 'COUNT 3 6';
+			const go = el('button', 'accent', 'Send');
+			const sendLine = (txt) => send({ link: txt }).then(() => { showLink(); toast('Sent "' + txt + '"'); });
+			go.onclick = () => { const v = line.value.trim(); if (v) sendLine(v); };
+			line.onkeydown = (e) => { if (e.key === 'Enter') go.onclick(); };
+			f.appendChild(line);
+			f.appendChild(go);
+			p.appendChild(f);
+			const row = el('div', 'row');
+			let n = 1;
+			[['Beat', () => `BEAT ${n++} 65.0 349 923`], ['3 of 6', () => 'COUNT 3 6'], ['6 of 6', () => 'COUNT 6 6'],
+				['Story start', () => 'STORY START 1'], ['Story end', () => 'STORY END 1']].forEach(([label, mk]) => {
+				const b = el('button', '', label);
+				b.onclick = () => sendLine(mk());
+				row.appendChild(b);
+			});
+			p.appendChild(row);
+		}
 
 		p.appendChild(el('h4', '', 'Connection'));
 		if (app.device === null) {
@@ -643,7 +688,11 @@
 		$('lvlBar').style.width = (level * 100).toFixed(1) + '%';
 		$('lvlTxt').textContent = level.toFixed(2);
 		const H = eng.R.heartbeat;
-		$('readout').textContent = `${H.bpm.toFixed(1)} BPM · pulses ${H.pulseSpeed.toFixed(1)} LED/s · baseline ${H.brightness.toFixed(2)}`;
+		const lk = dev ? app.devState.link : null;
+		const bpmTxt = lk && lk.ext ? `${lk.bpm.toFixed(1)} BPM (audio)` : `${H.bpm.toFixed(1)} BPM`;
+		$('readout').textContent = `${bpmTxt} · pulses ${H.pulseSpeed.toFixed(1)} LED/s · baseline ${H.brightness.toFixed(2)}`;
+		$('linkTxt').hidden = !lk;
+		if (lk) $('linkTxt').textContent = 'Audio link: ' + linkSummary(lk);
 		for (const n of app.nowEls) n.el.textContent = fmt(eng.R[n.group][n.def.k], n.def);
 		const box = $('evList');
 		let evs = eng.state().events;
