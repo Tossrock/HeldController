@@ -104,7 +104,8 @@ Send a **held command object** in any of these ways:
 |---|---|---|
 | `mask` | `{"mask": 13}` | Which pieces are in (bit *n* = piece *n+1*). Fires events per the rules above. |
 | `pieces` | `{"pieces": 3}` | Same, as a count (fills the lowest bits). |
-| `trigger` | `{"trigger": "allIn"}` | Play `pieceIn`, `pieceOut` or `allIn` (a string or an array). |
+| `trigger` | `{"trigger": "allIn"}` | Play `pieceIn`, `pieceOut`, `allIn` or `storyEnd` (a string or an array). |
+| `link` | `{"link": "COUNT 3 6"}` | Handle a line (or array of lines) exactly as if it came from the audio board. For testing without it. |
 | `cancel` / `clear` | `{"clear": true}` | Fade out an event type / drop all events. |
 | `params` | `{"params": {"heartbeat": {"bpm": [40, 80]}}}` | Partial parameter update. Colours are `"#RRGGBB"` or numbers. A string on a numeric parameter is an expression, e.g. `"bpm": "(pieces, t) => 60 + 5 * sin(t)"`. A rejected expression is reported once as `exprError` in the reply. |
 | `strips` | `{"strips": [{"origin": 12}, {"origin": 40}]}` | Per-strip settings (LED counts come from LED settings). |
@@ -119,16 +120,57 @@ Send a **held command object** in any of these ways:
  "events":[{"t":"pieceIn","age":0.8,"dur":3}], "params":{...}, "strips":[{...,"start":0}]}
 ```
 
-### Piece sensors
+## Audio link
 
-The interface with the sensor and audio team isn't defined yet, so `wled00/held/held_input.cpp` is a ready-to-enable placeholder. To read hall sensors directly, add the GPIOs to the build flags, one per piece:
+The audio "brain" ESP32 (repo `held-electronics`) reads the six pocket sensors and plays the heartbeat and stories. It reports what's happening as plain-text lines over a serial link, following `held-electronics/docs/Held_Lighting_Serial_Messages.md`. The lighting controller reads them on UART1.
+
+| Audio brain | Lighting controller | Purpose |
+|---|---|---|
+| GPIO4 (UART1 TX) | **GPIO32** (`HELD_LINK_RX`) | Messages from the brain |
+| GPIO18 (UART1 RX) | **GPIO33** (`HELD_LINK_TX`) | Replies (`PONG`, `HELLO`, `LOG …`); optional |
+| GND | GND | Required |
+
+Both boards use 3.3 V logic, so they connect directly. The link runs at 115200 baud, 8N1. GPIO 32/33 are free on both an ESP32 DevKit and a TinyPICO, and avoid the PSRAM pins of WROVER/PICO modules. Change them with `-D HELD_LINK_RX=… -D HELD_LINK_TX=…`; `-1` disables the link.
+
+| Message from the brain | What the lights do |
+|---|---|
+| `BEAT <n> <bpm> <dub ms> <next ms>` | The heartbeat emits one pulse per `BEAT`, placed so the lub peak lights the origin as the lub sounds. The heartbeat's own BPM is ignored while beats arrive. If none arrives for `beatTimeout` seconds (default 4), the heartbeat goes back to its own BPM. Gaps in `n` are counted as missed beats. |
+| `COUNT <seated> <required>` | Sets the piece count, which drives the level and the piece in/out events. `required` becomes the number of pieces. The first `COUNT` after the lights start is adopted silently, so a lighting reboot doesn't replay a "piece in". |
+| `STORY START <k>` | Plays the last-piece animation, if **Last-piece animation starts on** is set to "Story start". Not sent by the brain yet; see below. |
+| `STORY END <k>` | Plays the **Story ended** event: a warm glow that spreads from the origin and fades. |
+| `PING` | Answered with `PONG`. |
+| anything else | Ignored (counted as "lines ignored"). |
+
+At startup the lights send `HELLO` and `LOG Held lighting ready`. They send `LOG lights: …` when they start or stop following `BEAT`.
+
+The settings are under **Setup → Audio link**:
+
+- **Last-piece animation starts on:** "Last piece" or "Story start".
+- **Follow audio heartbeat** (`beatSync`).
+- **Beat timeout.**
+
+On a device, the same section shows the link status. Lines typed there are handled as if they came from the brain, and the quick buttons send sample `BEAT`, `COUNT` and `STORY` lines, so the lights can be tested without the brain. Over the API, `GET /json/held` includes a `link` object (counters, last line, last `BEAT`, seated/required, story).
+
+### Answers to the open questions in the proposal
+
+- **WLED or custom firmware?** Custom: WLED is the base for WiFi, LED setup and the web UI, but the Held engine and this protocol are our own code. The messages are used as proposed; no JSON is needed.
+- **UART and pins:** UART1 on the lighting ESP32, RX GPIO32 and TX GPIO33, as above.
+- **115200 baud:** yes.
+- **Replies:** `PONG` for `PING`, `HELLO` at startup, and occasional `LOG …` lines, which are fine to echo into the brain's Serial Monitor. Nothing needs an answer.
+- **`STORY START <k>`: yes please.** At the moment the last-piece animation starts when `COUNT` reaches `required`. Someone pulling a piece and re-seating it mid-story would then replay it while the audio carries on. With `STORY START`, set the trigger to "Story start" and the lights follow the audio exactly.
+- **`TARGET`:** not needed. `BEAT` carries the rate, and our transitions follow the piece count.
+- **One addition:** if the brain answered `HELLO` by re-sending `COUNT`, the lights would resync after a lighting reboot without waiting for the next piece change.
+
+### Piece sensors on the lighting board
+
+`wled00/held/held_input.cpp` can read hall sensors wired straight to the lighting controller, for a standalone setup without the brain. Add the GPIOs to the build flags, one per piece:
 
 ```ini
-build_flags = ... -D HELD_SENSOR_PINS=32,33,25,26,27,14   ; active-low with pull-up
+build_flags = ... -D HELD_SENSOR_PINS=25,26,27,14,4,13   ; active-low with pull-up
               ; -D HELD_SENSOR_ACTIVE_HIGH                ; if the sensors drive high
 ```
 
-The pins are debounced (30 ms) and only edges are reported, so pieces set from the UI stay set until a sensor actually changes. A non-JSON audio-board protocol would go in `heldInputLoop()` and call `heldSetPieces()` / `heldTrigger()`.
+The pins are debounced (30 ms) and only edges are reported, so pieces set from the UI stay set until a sensor actually changes.
 
 ## Code map
 
@@ -138,13 +180,15 @@ The pins are debounced (30 ms) and only edges are reported, so pieces set from t
 | `wled00/held/held_core.{h,cpp}` | Portable engine core (no Arduino dependencies). |
 | `wled00/held/held_expr.{h,cpp}` | Parameter expression compiler and evaluator. |
 | `wled00/held/held_wled.cpp` | WLED glue: the "Held" effect (segment *i* = strip *i*), JSON API, `/held.json`, engine mutex. |
-| `wled00/held/held_input.cpp` | Sensor / audio-board input placeholder. |
+| `wled00/held/held_link.{h,cpp}` | Audio brain serial protocol: parses lines and drives the engine (portable, unit-tested). |
+| `wled00/held/held_input.cpp` | Optional piece sensors wired to the lighting board. |
 | `wled00/data/held/schema.js` | The same parameters with UI labels, units and help text. |
 | `wled00/data/held/engine.js`, `expr.js` | JavaScript ports of the engine and the expression compiler, used by the simulator. |
 | `wled00/data/held/{index.htm,app.js,view3d.js,view3d_gl.js,held.css}` | The UI. The build inlines it into `wled00/html_held.h`, about 28 KB gzipped. |
 | `tools/held/heart/build_heart.py` | Joins the printed heart chunk STLs in Blender and builds the web model (`heart_model.js`, hosted on istariarts.org). |
 | `tools/held-test.js` | Tests (run by `npm test`). |
 | `tools/held/parity.js` | Compiles the C++ core natively and diffs its frames against `engine.js`. |
+| `tools/held/link_test.cpp` | Native unit test for the audio link (run by `npm test`). |
 | `tools/held/devserver.js` | The `npm run held:sim` dev server. |
 | `tools/held/kymo.js` | Renders an engine run to a space-time PNG (x = LED, y = time) for tuning pulse timing. |
 

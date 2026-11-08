@@ -24,7 +24,7 @@ User-facing documentation for the fork is in `docs/held/README.md`: setup, the c
 - **Held** is a ~750 × 500 mm 3D-printed anatomical heart, suspended from rigging. The owner did the modelling in Autodesk Fusion.
 - Six "missing pieces" hang on thin chains. Pushing a piece back in trips a hall sensor. When all six are held in at once, recorded stories about being heartbroken and then held by community play. Six is enough that it takes at least two people.
 - The **audio runs on a separate ESP32**, owned by another artist. This firmware only handles LEDs.
-- **Not yet defined by the other team members (as of 2026-11):** the sensor wiring and the audio-board link protocol. `wled00/held/held_input.cpp` is a placeholder; ask for the agreed protocol before implementing it. The JSON API (`{"held":{...}}` over serial, HTTP or WebSocket) already works as an interface.
+- **Audio brain link (implemented 2026-11-08):** the audio "brain" ESP32 reads the six pocket sensors and sends plain-text lines (`BEAT`, `COUNT`, `STORY END`) over a UART. The spec is in the sibling repo `../held-electronics` (`docs/Held_Lighting_Serial_Messages.md`, a proposal by Ellen Juhlin). The brain sketch there **doesn't send the messages yet**. Our side is `wled00/held/held_link.{h,cpp}`, with the UART on GPIO32 (RX) / GPIO33 (TX). Answers to the proposal's open questions are in `docs/held/README.md` → Audio link. We asked for `STORY START` and for `HELLO` → `COUNT` resync. If the protocol changes, update `held_link.cpp`, `tools/held/link_test.cpp` and that README section together.
 - **LED hardware:** WS2812 strips in roughly circular loops inside the heart. Default is one strip of 120 LEDs at 60 LED/m; a second, roughly orthogonal loop may be added.
 - **Status (2026-11-06):** first flashed to real hardware, a TinyPICO bench board with 60 LEDs. It booted, reported 60 LEDs on the Held effect, and accepted `{"held":...}` over serial. The heart's own wiring and controller are not set up yet. The engine was verified natively against the browser engine. The UI was tested in headless Chrome, in simulator mode and against a mock controller.
 
@@ -41,7 +41,8 @@ User-facing documentation for the fork is in `docs/held/README.md`: setup, the c
 | Param tables | `wled00/held/held_params.h` (X-macros) ↔ `wled00/data/held/schema.js` | Same order, keys, types, limits and defaults; `npm test` enforces it. Event groups must have `enabled` as param 0. |
 | Engine | `wled00/held/held_core.{h,cpp}` ↔ `wled00/data/held/engine.js` | Two implementations kept **operation-for-operation identical**. |
 | Expressions | `wled00/held/held_expr.{h,cpp}` ↔ `wled00/data/held/expr.js` | Same grammar, bytecode and function semantics. |
-| WLED glue | `wled00/held/held_wled.cpp`, `held.h`, `held_input.cpp` | Effect, JSON API, `/held.json`, engine mutex. |
+| WLED glue | `wled00/held/held_wled.cpp`, `held.h`, `held_input.cpp` | Effect, JSON API, `/held.json`, engine mutex, the audio link UART. |
+| Audio link | `wled00/held/held_link.{h,cpp}` | Portable protocol handler (no Arduino), driven with bytes by `held_wled.cpp`. Firmware-only: the JS engine has no counterpart, but it has the engine features the link uses. |
 | UI | `wled00/data/held/{index.htm,app.js,view3d.js,view3d_gl.js,held.css}` | Inlined into `wled00/html_held.h` by `tools/cdata.js`. The Held UI is served at `/`; stock WLED moved to `/classic`. |
 | Heart model | `tools/held/heart/build_heart.py` → `../istari-arts-site/src/static/held/heart_model.js` | Built from the printed chunk STLs with headless Blender; hosted, never in the firmware. |
 | Tooling | `tools/held-test.js`, `tools/held/{parity.js,parity_main.cpp,kymo.js,devserver.js}` | See Testing below. |
@@ -64,6 +65,13 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
   - Count up fires `pieceIn`; reaching all pieces fires `allIn` instead (not restarted if already running).
   - Count down fires `pieceOut`, and cancels `allIn` if the count dropped from all pieces.
   - In the last `releaseGrace` seconds of `allIn`, removals are ignored but still change the level.
+  - With `allInTrigger` = "Story start", reaching all pieces fires `pieceIn`, and `allIn` waits for the link's `STORY START`.
+  - `storyEnd` (from the link's `STORY END`) is a plain timed event.
+- **External heartbeat clock.** `setExternalClock(true)` stops the internal BPM phase, and each `beat()` emits one pulse at `lutPeak × pulseWidth`, so the waveform's peak (the lub) is at the origin when the beat arrives. `setPieces(mask, false)` adopts a count without events. The link uses these; the parity check covers them in both engines.
+- **Link mapping** (`held_link.cpp`):
+  - `BEAT` → `beat()` while the global `beatSync` is on. After `beatTimeout` seconds without a `BEAT`, `poll()` returns to the internal clock.
+  - `COUNT s r` → `numPieces = r`, and the lowest `s` bits as the mask. The first `COUNT` after boot is silent.
+  - `STORY START` → `allIn` (story mode only). `STORY END` → `storyEnd`. `PING` → `PONG`. Unknown lines are counted and ignored.
 - **Firmware.** Segment *i* = Held strip *i* (`WLED_AUTOSEGMENTS` makes one segment per LED output), up to 4 strips; LED counts come from segments. `autoApply` keeps every segment on the Held effect. Engine access goes through a FreeRTOS mutex, and the renderer never waits: it keeps the last frame instead.
 
 ### Invariants: read before changing the engine
@@ -94,7 +102,8 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
 
 ### Testing and verification
 
-- `npm test` runs the schema consistency check, engine and expression tests, the parity check, and WLED's own `cdata` tests.
+- `npm test` runs the schema consistency check, engine and expression tests, the parity check, the native audio-link unit test (`tools/held/link_test.cpp`), and WLED's own `cdata` tests. Native builds share `tools/held/native.js`.
+- Test the link on a device without the brain: **Setup → Audio link** in the UI, or `{"held":{"link":"BEAT 1 65.0 349 923"}}` over any JSON transport.
 - **Visual checks:**
   - `node tools/held/kymo.js --out k.png --seconds 20 --script '[[2,63]]' --strip '{"leds":120,"reps":2}'` renders a run to a space-time PNG. View it to judge pulse spacing, speed and event timing.
   - For UI checks, drive headless Chrome (`chrome --headless=new --remote-debugging-port=N`) over the DevTools protocol with Node's built-in `WebSocket`: click elements, read the DOM, catch `Runtime.exceptionThrown`, and take screenshots. Do this on a copy of the built page, gunzipped from `wled00/html_held.h`, to catch minifier issues. Also test a phone viewport (390 px).
@@ -136,7 +145,11 @@ Hosted on https, the page can only simulate, because browsers block calls to `ht
   - Flash `held_esp32` and join `Held-AP` (password `heldgently`).
   - Configure the LED outputs, then confirm segments map to strips and the origin and direction are right on the physical loop.
   - Check `/json/held` and the live view.
-- **Sensors and audio board:** waiting on the other team's protocol (see `held_input.cpp`).
+- **Audio link end-to-end:**
+  - Not yet tested with real hardware. The brain sketch doesn't send the messages yet, and no board was attached when the link was written.
+  - When it does: wire brain GPIO4 → lighting GPIO32, brain GPIO18 ← lighting GPIO33, and GND.
+  - Then check Setup → Audio link, and tune the brain's `BEAT` delay by eye.
+  - The light's dub currently comes from the waveform shape, not the message's `dub ms`. Matching it exactly is a possible refinement.
 - **Sizing:** decide strip density and length for the heart's actual size.
 
 ## Build Commands
