@@ -24,7 +24,7 @@ User-facing documentation for the fork is in `docs/held/README.md`: setup, the c
 - **Held** is a ~750 × 500 mm 3D-printed anatomical heart, suspended from rigging. The owner did the modelling in Autodesk Fusion.
 - Six "missing pieces" hang on thin chains. Pushing a piece back in trips a hall sensor. When all six are held in at once, recorded stories about being heartbroken and then held by community play. Six is enough that it takes at least two people.
 - The **audio runs on a separate ESP32**, owned by another artist. This firmware only handles LEDs.
-- **Audio brain link (implemented 2026-11-08):** the audio "brain" ESP32 reads the six pocket sensors and sends plain-text lines (`BEAT`, `COUNT`, `STORY END`) over a UART. The spec is in the sibling repo `../held-electronics` (`docs/Held_Lighting_Serial_Messages.md`, a proposal by Ellen Juhlin). The brain sketch there **doesn't send the messages yet**. Our side is `wled00/held/held_link.{h,cpp}`, with the UART on GPIO32 (RX) / GPIO33 (TX). Answers to the proposal's open questions are in `docs/held/README.md` → Audio link. We asked for `STORY START` and for `HELLO` → `COUNT` resync. If the protocol changes, update `held_link.cpp`, `tools/held/link_test.cpp` and that README section together.
+- **Audio brain link (implemented 2026-11-08):** the audio "brain" ESP32 reads the six pocket sensors and sends plain-text lines (`BEAT`, `COUNT`, `STORY END`) over a UART. The spec is in the sibling repo `../held-electronics` (`docs/Held_Lighting_Serial_Messages.md`, a proposal by Ellen Juhlin). The brain sketch there **doesn't send the messages yet**. Our side is `wled00/held/held_link.{h,cpp}`, with the UART on GPIO32 (RX) / GPIO33 (TX) by default. The pins and baud can be changed at runtime. Answers to the proposal's open questions are in `docs/held/README.md` → Audio link. We asked for `STORY START` and for `HELLO` → `COUNT` resync. If the protocol changes, update `held_link.cpp`, `tools/held/link_test.cpp` and that README section together.
 - **LED hardware:** WS2812 strips in roughly circular loops inside the heart. Default is one strip of 120 LEDs at 60 LED/m; a second, roughly orthogonal loop may be added.
 - **Status (2026-11-06):** first flashed to real hardware, a TinyPICO bench board with 60 LEDs. It booted, reported 60 LEDs on the Held effect, and accepted `{"held":...}` over serial. The heart's own wiring and controller are not set up yet. The engine was verified natively against the browser engine. The UI was tested in headless Chrome, in simulator mode and against a mock controller.
 
@@ -68,6 +68,10 @@ Hooks into WLED itself are small and marked `// AI:`, all behind `#ifdef WLED_EN
   - With `allInTrigger` = "Story start", reaching all pieces fires `pieceIn`, and `allIn` waits for the link's `STORY START`.
   - `storyEnd` (from the link's `STORY END`) is a plain timed event.
 - **External heartbeat clock.** `setExternalClock(true)` stops the internal BPM phase, and each `beat()` emits one pulse at `lutPeak × pulseWidth`, so the waveform's peak (the lub) is at the origin when the beat arrives. `setPieces(mask, false)` adopts a count without events. The link uses these; the parity check covers them in both engines.
+- **Runtime hardware config** (2026-11-09):
+  - **LED outputs:** the UI (Strip config → Hardware) edits WLED's own bus config. It GETs `/json/cfg`, replaces `hw.led.ins`, and POSTs the **whole `hw` object** back. A partial `hw.led` POST would reset `rgbwm`/`fps` to defaults, and leaving out `hw.com` clears the color-order map. WLED then sets `doInitBusses`, rebuilds the outputs in its loop and writes `cfg.json`.
+  - **LED types:** `/json/held` (full) includes `ledTypes` from `BusDigital::getLEDTypes()`.
+  - **Audio link:** pins and baud come from `{"held":{"hw":{linkRx,linkTx,linkBaud}}}`. They are applied on the main loop (`linkMaintain`, because the UART is read there), saved to `/held_hw.json`, and retried every 5 s if a pin is busy. Link pins are allocated as `PinOwner::UM_Unspecified`, which `/json/pins` names "Usermod"; the UI relabels them "audio RX/TX".
 - **Link mapping** (`held_link.cpp`):
   - `BEAT` → `beat()` while the global `beatSync` is on. After `beatTimeout` seconds without a `BEAT`, `poll()` returns to the internal clock.
   - `COUNT s r` → `numPieces = r`, and the lowest `s` bits as the mask. The first `COUNT` after boot is silent.
@@ -147,7 +151,8 @@ Hosted on https, the page can only simulate, because browsers block calls to `ht
   - Check `/json/held` and the live view.
 - **Audio link end-to-end:**
   - Not yet tested with real hardware. The brain sketch doesn't send the messages yet, and no board was attached when the link was written.
-  - When it does: wire brain GPIO4 → lighting GPIO32, brain GPIO18 ← lighting GPIO33, and GND.
+  - When it does: wire brain GPIO4 → lighting GPIO32, brain GPIO18 ← lighting GPIO33, and GND (or other pins, set in Strip config → Hardware).
+  - Runtime hardware config is likewise tested only against the mock controller, not a real board. Check on hardware that applying LED outputs rebuilds the strips without a reboot, and that moving the link pins works.
   - Then check Setup → Audio link, and tune the brain's `BEAT` delay by eye.
   - The light's dub currently comes from the waveform shape, not the message's `dub ms`. Matching it exactly is a possible refinement.
 - **Sizing:** decide strip density and length for the heart's actual size.

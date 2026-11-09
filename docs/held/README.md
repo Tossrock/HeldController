@@ -37,7 +37,7 @@ pio run -e held_esp32 -t upload
 
 1. The controller opens a WiFi access point **`Held-AP`** (password `heldgently`).
 2. Join it. The captive portal opens the Held UI directly. To join another WiFi network instead, use **Setup → links → WiFi** (`/settings/wifi`).
-3. In **Setup → links → LEDs**, set the LED type (e.g. WS281x), GPIO and LED count for each output. **Each LED output becomes one Held strip** (the `held_esp32` build enables WLED auto-segments: one segment per output).
+3. In **Strip config → Hardware**, set each LED output's type (e.g. WS281x, or APA102 with a clock pin), data pin, LED count and color order, then press **Apply LED outputs**. **Each LED output becomes one Held strip** (the `held_esp32` build enables WLED auto-segments: one segment per output). The audio link pins are set in the same section. See [Hardware configuration](#hardware-configuration).
 4. Open the controller's address (or `http://held.local`) for the Held UI. The stock WLED UI is still available at `/classic` for diagnostics.
 
 ## How the engine works
@@ -130,7 +130,11 @@ The audio "brain" ESP32 (repo `held-electronics`) reads the six pocket sensors a
 | GPIO18 (UART1 RX) | **GPIO33** (`HELD_LINK_TX`) | Replies (`PONG`, `HELLO`, `LOG …`); optional |
 | GND | GND | Required |
 
-Both boards use 3.3 V logic, so they connect directly. The link runs at 115200 baud, 8N1. GPIO 32/33 are free on both an ESP32 DevKit and a TinyPICO, and avoid the PSRAM pins of WROVER/PICO modules. Change them with `-D HELD_LINK_RX=… -D HELD_LINK_TX=…`; `-1` disables the link.
+Both boards use 3.3 V logic, so they connect directly. The link defaults to 115200 baud, 8N1. GPIO 32/33 are free on both an ESP32 DevKit and a TinyPICO, and avoid the PSRAM pins of WROVER/PICO modules.
+
+The pins and baud rate can be changed at runtime in **Strip config → Hardware: audio link**. They are saved on the device in `/held_hw.json`. Over the API, send `{"hw": {"linkRx": 25, "linkTx": 33, "linkBaud": 115200}}`; `-1` disables a pin. The build flags `HELD_LINK_RX` / `HELD_LINK_TX` / `HELD_LINK_BAUD` are only the first-boot defaults.
+
+If a pin is in use (e.g. by an LED output), the link stays off and reports why in the link status. It retries every 5 s, so moving the LEDs off that pin brings the link up.
 
 | Message from the brain | What the lights do |
 |---|---|
@@ -150,6 +154,24 @@ The settings are under **Setup → Audio link**:
 - **Beat timeout.**
 
 On a device, the same section shows the link status. Lines typed there are handled as if they came from the brain, and the quick buttons send sample `BEAT`, `COUNT` and `STORY` lines, so the lights can be tested without the brain. Over the API, `GET /json/held` includes a `link` object (counters, last line, last `BEAT`, seated/required, story).
+
+## Hardware configuration
+
+On a device, **Strip config → Hardware** sets the LED outputs and the audio link pins, without rebuilding the firmware.
+
+- **LED outputs.** This is WLED's own LED configuration in a simpler form. For each output you set:
+  - the strip type, from the digital types this build supports (for example WS281x, SK6812 RGBW, TM1814, APA102, WS2801);
+  - the data pin, plus a clock pin for 4-wire types;
+  - the LED count, color order, and whether it is reversed.
+
+  **Apply LED outputs** reads the current hardware section of `/json/cfg`, replaces the output list, and posts the whole section back. WLED then rebuilds the outputs live and saves `cfg.json`, keeping everything else (power limit, timing, buttons). Up to 4 outputs; each becomes one Held strip. Settings not offered here are still under **All LED settings** (`/settings/leds`).
+- **Pin pickers** come from `/json/pins`:
+  - they mark pins that are already in use (LEDs, the audio link, system), as well as boot/strapping pins;
+  - input-only pins are left out for outputs;
+  - the UI refuses a pin used twice, and warns when an LED pin is also the audio link's.
+- **Audio link:** RX pin, TX pin and baud rate; see [Audio link](#audio-link).
+
+The direct piece-sensor pins (`HELD_SENSOR_PINS`, below) are still a build-time setting.
 
 ### Answers to the open questions in the proposal
 
