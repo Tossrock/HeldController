@@ -116,6 +116,9 @@ textarea.code.bad { border-color: #c0503a; }
 .exprMsg { color: #ff8a7a; font-size: 12px; min-height: 16px; display: flex; justify-content: space-between; gap: 8px; }
 .exprMsg .link { margin-left: auto; font-size: 12px; }
 .exprHelp { font-size: 11px; }
+.hwRow { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.hwRow label { flex: 0 0 96px; color: var(--muted); }
+.hwRow select, .hwRow input[type=number] { flex: 1; min-width: 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 5px 6px; }
 .layerTools { display: flex; gap: 8px; margin: 10px 0 0; }
 .stripCard { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
 .stripCard h4 { margin-top: 2px; }

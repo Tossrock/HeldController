@@ -158,6 +158,7 @@
 	}
 
 	function takeFull(j) {
+		if (j.ledTypes && j.ledTypes.length) app.ledTypes = j.ledTypes;
 		if (j.params) eng.setParams(j.params);
 		if (j.strips && j.strips.length) {
 			app.strips = j.strips.map((s, i) => HeldEngine.sanitizeStrip(s, i));
@@ -540,7 +541,7 @@
 	function renderStrips(p) {
 		const dev = app.device !== null;
 		p.appendChild(el('p', 'lhelp', dev
-			? 'Strips are the WLED segments: one per LED output. LED counts, chipset and GPIO are set in LED settings. Tap an LED in the 3D view to find its index or make it the origin.'
+			? 'Strips are the WLED segments: one per LED output. LED type, pins and counts are under Hardware below. Tap an LED in the 3D view to find its index or make it the origin.'
 			: 'Simulated strips. On a device each LED output becomes one strip. Tap an LED in the 3D view to find its index or make it the origin.'));
 		app.strips.forEach((st, i) => {
 			const card = el('div', 'stripCard');
@@ -560,10 +561,9 @@
 		});
 		const row = el('div', 'row');
 		if (dev) {
-			const a = el('a', '', 'Open LED settings →');
-			a.href = (app.device || '') + '/settings/leds';
-			a.target = '_blank';
-			row.appendChild(a);
+			p.appendChild(row);
+			renderHardware(p);
+			return;
 		} else {
 			const add = el('button', '', '+ Add strip'), rem = el('button', '', '− Remove strip');
 			add.disabled = app.strips.length >= MAX_STRIPS;
@@ -576,9 +576,197 @@
 		p.appendChild(row);
 	}
 
+	// ------------------------------------------------------------------ hardware (device only)
+	// LED outputs are WLED's own bus config: read from /json/cfg, edited here, and posted back as
+	// the whole "hw" object (WLED rebuilds the outputs live and saves cfg.json). Audio link pins go
+	// to /json/held {"hw": ...} and are kept in /held_hw.json on the device.
+	const ORDERS = ['GRB', 'RGB', 'BRG', 'RBG', 'BGR', 'GBR'];
+	const FALLBACK_TYPES = [{ i: 22, n: 'WS281x RGB', p: 1 }, { i: 30, n: 'SK6812/WS2814 RGBW', p: 1 }, { i: 50, n: 'WS2801 RGB', p: 2 }, { i: 51, n: 'APA102 RGB', p: 2 }];
+	const PIN_BOOT = 0x08 | 0x10, PIN_INPUT_ONLY = 0x20;
+	const BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600];
+	const ledType = (id) => (app.ledTypes || FALLBACK_TYPES).find((t) => t.i === id) || { i: id, n: 'type ' + id, p: 1 };
+
+	function loadHw() {
+		return Promise.all([api('GET', '/json/cfg'), api('GET', '/json/pins')]).then(([cfg, pins]) => {
+			app.hwCfg = cfg && cfg.hw && cfg.hw.led ? cfg.hw : null;
+			app.hwPins = pins && pins.pins ? pins.pins : [];
+			app.hwOutputs = app.hwCfg ? (app.hwCfg.led.ins || []).map((o) => ({
+				type: o.type, pins: (o.pin || []).slice(), len: o.len, order: (o.order || 0) & 0x0F, orderHi: (o.order || 0) & 0xF0, rev: !!o.rev, src: o
+			})) : [];
+			app.hwDirty = false;
+		});
+	}
+
+	function pinSelect(cur, output, allowNone, onChange) {
+		const sel = el('select');
+		if (allowNone) sel.add(new Option('none', '-1'));
+		const lk = (app.devState && app.devState.link) || {};
+		const pins = (app.hwPins || []).slice();
+		if (cur >= 0 && !pins.some((q) => q.p === cur)) pins.push({ p: cur, c: 0 });
+		pins.sort((a, b) => a.p - b.p);
+		for (const pin of pins) {
+			if (output && (pin.c & PIN_INPUT_ONLY)) continue;
+			const notes = [];
+			if (lk.uart && pin.p === lk.rx) notes.push('audio RX');
+			else if (lk.txOn && pin.p === lk.tx) notes.push('audio TX');
+			else if (pin.a && pin.n) notes.push(pin.n);
+			if (pin.c & PIN_BOOT) notes.push('boot pin');
+			if (pin.c & PIN_INPUT_ONLY) notes.push('input only');
+			sel.add(new Option('GPIO' + pin.p + (notes.length ? ' · ' + notes.join(', ') : ''), String(pin.p)));
+		}
+		sel.value = String(cur);
+		sel.onchange = () => onChange(Number(sel.value));
+		return sel;
+	}
+
+	function hwRow(label, input) {
+		const r = el('div', 'hwRow');
+		r.appendChild(el('label', '', label));
+		r.appendChild(input);
+		return r;
+	}
+
+	function renderHardware(p) {
+		p.appendChild(el('h4', '', 'Hardware: LED outputs'));
+		if (!app.hwCfg) {
+			p.appendChild(el('p', 'lhelp', 'Loading the device\'s LED configuration…'));
+			if (!app.hwLoading) {
+				app.hwLoading = true;
+				loadHw().finally(() => { app.hwLoading = false; if (app.tab === 'strips') renderPanel(); });
+			}
+			return;
+		}
+		p.appendChild(el('p', 'lhelp', 'Each output is one data line (plus a clock line for 4-wire strips such as APA102) and becomes one Held strip. Changes apply when you press Apply: the LEDs restart and the device saves them.'));
+		const mark = () => { app.hwDirty = true; applyBtn.classList.add('dirty'); };
+		app.hwOutputs.forEach((o, i) => {
+			const card = el('div', 'stripCard');
+			card.appendChild(el('h4', '', 'Output ' + (i + 1)));
+			const type = el('select');
+			const types = (app.ledTypes || FALLBACK_TYPES).slice();
+			if (!types.some((t) => t.i === o.type)) types.push(ledType(o.type));
+			for (const t of types) type.add(new Option(t.n + (t.p === 2 ? ' (data + clock)' : ''), String(t.i)));
+			type.value = String(o.type);
+			type.onchange = () => { o.type = Number(type.value); mark(); renderPanel(); };
+			card.appendChild(hwRow('Type', type));
+			card.appendChild(hwRow('Data pin', pinSelect(o.pins[0] !== undefined ? o.pins[0] : -1, true, false, (v) => { o.pins[0] = v; mark(); })));
+			if (ledType(o.type).p === 2) {
+				card.appendChild(hwRow('Clock pin', pinSelect(o.pins[1] !== undefined && o.pins[1] < 255 ? o.pins[1] : -1, true, false, (v) => { o.pins[1] = v; mark(); })));
+			}
+			const len = el('input');
+			len.type = 'number'; len.min = 1; len.max = 1500; len.value = o.len;
+			len.onchange = () => { o.len = Math.max(1, Math.min(1500, Math.round(Number(len.value) || 1))); len.value = o.len; mark(); };
+			card.appendChild(hwRow('LEDs', len));
+			const ord = el('select');
+			ORDERS.forEach((n, k) => ord.add(new Option(n, String(k))));
+			ord.value = String(o.order);
+			ord.onchange = () => { o.order = Number(ord.value); mark(); };
+			card.appendChild(hwRow('Color order', ord));
+			const rev = el('input');
+			rev.type = 'checkbox'; rev.checked = o.rev;
+			rev.onchange = () => { o.rev = rev.checked; mark(); };
+			card.appendChild(hwRow('Reversed', rev));
+			if (app.hwOutputs.length > 1) {
+				const rm = el('button', 'link', 'remove output');
+				rm.onclick = () => { app.hwOutputs.splice(i, 1); mark(); renderPanel(); };
+				card.appendChild(rm);
+			}
+			p.appendChild(card);
+		});
+		const row = el('div', 'row');
+		const add = el('button', '', '+ Add output');
+		add.disabled = app.hwOutputs.length >= MAX_STRIPS;
+		add.onclick = () => {
+			const used = new Set(app.hwOutputs.flatMap((o) => o.pins));
+			const free = (app.hwPins || []).find((q) => !q.a && !(q.c & (PIN_INPUT_ONLY | PIN_BOOT)) && !used.has(q.p));
+			app.hwOutputs.push({ type: 22, pins: [free ? free.p : -1], len: 60, order: 0, orderHi: 0, rev: false, src: null });
+			mark();
+			renderPanel();
+		};
+		const applyBtn = el('button', 'accent' + (app.hwDirty ? ' dirty' : ''), 'Apply LED outputs');
+		applyBtn.onclick = applyLedOutputs;
+		const revert = el('button', '', 'Reload');
+		revert.onclick = () => { app.hwCfg = null; renderPanel(); };
+		row.appendChild(add);
+		row.appendChild(applyBtn);
+		row.appendChild(revert);
+		p.appendChild(row);
+		const adv = el('p', 'links');
+		const a = el('a', '', 'All LED settings (power limit, timing, …) →');
+		a.href = (app.device || '') + '/settings/leds';
+		a.target = '_blank';
+		adv.appendChild(a);
+		p.appendChild(adv);
+
+		// audio brain link
+		p.appendChild(el('h4', '', 'Hardware: audio link'));
+		const lk = (app.devState && app.devState.link) || {};
+		p.appendChild(el('p', 'lhelp', 'Serial link from the audio brain: its GPIO4 (TX) goes to RX here, its GPIO18 (RX) to TX here, plus GND. Applies immediately and is saved on the device.' + (lk.error ? ' Current problem: ' + lk.error + '.' : '')));
+		const cfg = { rx: lk.rx !== undefined ? lk.rx : 32, tx: lk.tx !== undefined ? lk.tx : 33, baud: lk.baud || 115200 };
+		p.appendChild(hwRow('RX pin', pinSelect(cfg.rx, false, true, (v) => { cfg.rx = v; })));
+		p.appendChild(hwRow('TX pin', pinSelect(cfg.tx, true, true, (v) => { cfg.tx = v; })));
+		const baud = el('select');
+		const bauds = BAUDS.indexOf(cfg.baud) < 0 ? BAUDS.concat([cfg.baud]) : BAUDS;
+		bauds.forEach((b) => baud.add(new Option(String(b), String(b))));
+		baud.value = String(cfg.baud);
+		baud.onchange = () => { cfg.baud = Number(baud.value); };
+		p.appendChild(hwRow('Baud', baud));
+		const la = el('button', 'accent', 'Apply audio link');
+		la.onclick = async () => {
+			if (cfg.rx >= 0 && cfg.rx === cfg.tx) { toast('RX and TX must be different pins'); return; }
+			const clash = app.hwOutputs.some((o) => o.pins.includes(cfg.rx) || (cfg.tx >= 0 && o.pins.includes(cfg.tx)));
+			if (clash && !confirm('That pin is also used by an LED output. Use it anyway?')) return;
+			await send({ hw: { linkRx: cfg.rx, linkTx: cfg.tx, linkBaud: cfg.baud } });
+			setTimeout(async () => {
+				const j = await api('GET', '/json/held?s');
+				if (j && j.v !== undefined) takeState(j);
+				const l2 = app.devState && app.devState.link;
+				toast(l2 && l2.uart ? `Audio link on GPIO${l2.rx}` + (l2.txOn ? `/${l2.tx}` : '') : 'Audio link: ' + ((l2 && l2.error) || 'off'));
+				app.hwCfg = null;
+				if (app.tab === 'strips') renderPanel();
+			}, 800);
+		};
+		p.appendChild(la);
+	}
+
+	async function applyLedOutputs() {
+		const used = new Map();
+		const lk = (app.devState && app.devState.link) || {};
+		for (const [i, o] of app.hwOutputs.entries()) {
+			const n = ledType(o.type).p;
+			for (let k = 0; k < n; k++) {
+				const pin = o.pins[k];
+				if (pin === undefined || pin < 0) { toast(`Output ${i + 1}: choose a ${k ? 'clock' : 'data'} pin`); return; }
+				if (used.has(pin)) { toast(`GPIO${pin} is used twice`); return; }
+				used.set(pin, i);
+			}
+		}
+		const linkClash = [lk.uart ? lk.rx : -1, lk.txOn ? lk.tx : -1].filter((q) => q >= 0 && used.has(q));
+		if (linkClash.length && !confirm(`GPIO${linkClash[0]} is the audio link; the LEDs will not get it while the link uses it. Apply anyway?`)) return;
+		if (!confirm('Apply the LED outputs? The LEDs restart with the new settings.')) return;
+		const hw = JSON.parse(JSON.stringify(app.hwCfg));
+		let start = 0;
+		hw.led.ins = app.hwOutputs.map((o) => {
+			const base = o.src ? Object.assign({}, o.src) : {};
+			if (o.src && o.src.type !== o.type) for (const k of ['cch', 'cmap', 'cinv', 'c16', 'cio', 'ct0h', 'ct0l', 'ct1h', 'ct1l', 'crst']) delete base[k];
+			const out = Object.assign(base, { start: start, len: o.len, pin: o.pins.slice(0, ledType(o.type).p), type: o.type, order: o.orderHi | o.order, rev: o.rev });
+			start += o.len;
+			return out;
+		});
+		hw.led.total = start;
+		const r = await api('POST', '/json/cfg', { hw: hw });
+		if (!r) { toast('The device did not accept the LED settings'); return; }
+		toast('LED outputs applied');
+		app.hwCfg = null;
+		setTimeout(async () => {
+			const j = await api('GET', '/json/held');
+			if (j && j.v !== undefined) takeFull(j);
+			if (app.tab === 'strips') renderPanel();
+		}, 1500);
+	}
+
 	// one-line description of the audio brain link state reported by the device
 	function linkSummary(lk) {
-		if (!lk.uart && lk.lineAgo < 0) return 'no UART (set HELD_LINK_RX)';
+		if (!lk.uart && lk.lineAgo < 0) return 'off' + (lk.error ? ': ' + lk.error : '');
 		if (lk.lineAgo < 0) return `waiting for the audio board on GPIO${lk.rx}`;
 		const parts = [];
 		if (lk.beats) parts.push(lk.beatAgo >= 0 && lk.beatAgo < 3000 ? `${lk.bpm.toFixed(1)} BPM, beat ${lk.beat}` : `no BEAT for ${Math.round(lk.beatAgo / 1000)} s`);
