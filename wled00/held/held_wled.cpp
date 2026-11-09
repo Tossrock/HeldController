@@ -32,8 +32,10 @@ static constexpr unsigned long SEG_CHECK_INTERVAL = 1000; // ms
 static constexpr TickType_t LOCK_WAIT = pdMS_TO_TICKS(50);
 static constexpr uint8_t JSON_LOCK_HELD = 40;
 
-// Audio brain link: UART1 on these pins, 115200 8N1 (held-electronics/docs/Held_Lighting_Serial_Messages.md).
-// Wire brain GPIO4 (TX) -> HELD_LINK_RX, brain GPIO18 (RX) <- HELD_LINK_TX, and GND. -1 disables.
+// Audio brain link: UART1, 8N1 (held-electronics/docs/Held_Lighting_Serial_Messages.md).
+// Wire brain GPIO4 (TX) -> RX pin, brain GPIO18 (RX) <- TX pin, and GND. The build flags are the
+// first-boot defaults; pins and baud set at runtime ({"held":{"hw":{...}}}) are kept in /held_hw.json.
+// -1 disables a pin.
 #ifndef HELD_LINK_RX
   #define HELD_LINK_RX 32
 #endif
@@ -44,9 +46,19 @@ static constexpr uint8_t JSON_LOCK_HELD = 40;
   #define HELD_LINK_BAUD 115200
 #endif
 static HardwareSerial& linkSerial = Serial1;
-static bool linkRx = false, linkTx = false;
-static unsigned long lastLinkPoll = 0;
-static constexpr unsigned long LINK_POLL_INTERVAL = 50;   // ms; beat-timeout check
+static bool linkRx = false, linkTx = false;   // UART pins currently allocated and running
+static int8_t linkRxPin = HELD_LINK_RX, linkTxPin = HELD_LINK_TX;
+static uint32_t linkBaud = HELD_LINK_BAUD;
+static char linkError[48] = "";
+static bool linkReconfig = false;              // new pins requested; applied on the main loop
+static int8_t newRxPin, newTxPin;
+static uint32_t newBaud;
+static bool hwNeedsSave = false;
+static unsigned long lastLinkPoll = 0, lastLinkRetry = 0;
+static constexpr unsigned long LINK_POLL_INTERVAL = 50;     // ms; beat-timeout check
+static constexpr unsigned long LINK_RETRY_INTERVAL = 5000;  // ms; retry pins that were busy (e.g. until LEDs move off them)
+static constexpr uint32_t LINK_BAUD_MIN = 1200, LINK_BAUD_MAX = 2000000;
+static const char HELD_HW_FILE[] PROGMEM = "/held_hw.json";
 
 static const char HELD_FILE[] PROGMEM = "/held.json";
 static const char _data_FX_MODE_HELD[] PROGMEM = "Held@;;;1";
@@ -233,6 +245,15 @@ static bool applyCommand(JsonObject h) {
     for (JsonVariant v : linkLines.as<JsonArray>()) if (v.is<const char*>()) audioLink.handleLine(v.as<const char*>(), millis());
   }
 
+  // "hw": audio link pins / baud; applied and saved on the main loop (the UART is read there)
+  JsonObject hwCmd = h[F("hw")];
+  if (!hwCmd.isNull()) {
+    newRxPin = constrain((int)(hwCmd[F("linkRx")] | (int)linkRxPin), -1, WLED_NUM_PINS - 1);
+    newTxPin = constrain((int)(hwCmd[F("linkTx")] | (int)linkTxPin), -1, WLED_NUM_PINS - 1);
+    newBaud = constrain((uint32_t)(hwCmd[F("linkBaud")] | linkBaud), LINK_BAUD_MIN, LINK_BAUD_MAX);
+    linkReconfig = true;
+  }
+
   if (h[F("save")] | false) needsSave = true;
   return cfgChanged;
 }
@@ -268,8 +289,11 @@ void heldSerialize(JsonObject root, bool full) {
     uint32_t now = millis();
     JsonObject lo = root.createNestedObject(F("link"));
     lo[F("uart")] = linkRx;
-    lo[F("rx")] = HELD_LINK_RX;
-    lo[F("tx")] = linkTx ? HELD_LINK_TX : -1;
+    lo[F("rx")] = linkRxPin;
+    lo[F("tx")] = linkTxPin;
+    lo[F("txOn")] = linkTx;
+    lo[F("baud")] = linkBaud;
+    if (linkError[0]) lo[F("error")] = (char*)linkError;  // copied
     lo[F("ext")] = engine.externalClock();
     lo[F("lineAgo")] = ls.lastLineMs ? (long)(now - ls.lastLineMs) : -1L;
     lo[F("beatAgo")] = ls.lastBeatMs ? (long)(now - ls.lastBeatMs) : -1L;
@@ -304,6 +328,14 @@ void heldSerialize(JsonObject root, bool full) {
   JsonArray strips = root[F("strips")];
   for (unsigned s = 0; s < strips.size() && s < strip.getSegmentsNum(); s++) {
     strips[s][F("start")] = strip.getSegment(s).start;  // where this strip begins in the global LED index (for live view)
+  }
+  // LED strip types the UI offers for the outputs (WLED's own LED config does the rest; see /json/cfg)
+  JsonArray types = root.createNestedArray(F("ledTypes"));
+  for (const LEDType& t : BusDigital::getLEDTypes()) {
+    JsonObject o = types.createNestedObject();
+    o["i"] = t.id;
+    o["n"] = t.name;  // static string
+    o["p"] = Bus::is2Pin(t.id) ? 2 : 1;
   }
 }
 
@@ -356,23 +388,81 @@ static void loadConfig() {
 
 // ------------------------------------------------------------------ audio brain link
 static void linkSetup() {
-  int8_t rx = HELD_LINK_RX, tx = HELD_LINK_TX;
-  if (rx < 0) { DEBUG_PRINTLN(F("Held: audio link disabled")); return; }
+  int8_t rx = linkRxPin, tx = linkTxPin;
+  linkError[0] = 0;
+  if (rx < 0) { strcpy_P(linkError, PSTR("disabled (no RX pin)")); return; }
   if (!PinManager::allocatePin(rx, false, PinOwner::UM_Unspecified)) {
-    DEBUG_PRINTF_P(PSTR("Held: audio link RX pin %d unavailable\n"), rx);
+    snprintf_P(linkError, sizeof(linkError), PSTR("RX GPIO%d unavailable or in use"), rx);
+    DEBUG_PRINTF_P(PSTR("Held: audio link %s\n"), linkError);
     return;
   }
   if (tx >= 0 && !PinManager::allocatePin(tx, true, PinOwner::UM_Unspecified)) {
-    DEBUG_PRINTF_P(PSTR("Held: audio link TX pin %d unavailable, receive only\n"), tx);
+    snprintf_P(linkError, sizeof(linkError), PSTR("TX GPIO%d unavailable or in use; receive only"), tx);
+    DEBUG_PRINTF_P(PSTR("Held: audio link %s\n"), linkError);
     tx = -1;
   }
-  linkSerial.begin(HELD_LINK_BAUD, SERIAL_8N1, rx, tx);
+  linkSerial.begin(linkBaud, SERIAL_8N1, rx, tx);
   linkRx = true;
   linkTx = tx >= 0;
   EngineLock lock(LOCK_WAIT);
   if (lock.ok()) {
     audioLink.queueReply("HELLO");   // a brain that answers with COUNT lets the lights resync after a reboot
     audioLink.queueReply("LOG Held lighting ready");
+  }
+}
+
+static void linkTeardown() {
+  if (linkRx) linkSerial.end();
+  if (linkRx) PinManager::deallocatePin(linkRxPin, PinOwner::UM_Unspecified);
+  if (linkTx) PinManager::deallocatePin(linkTxPin, PinOwner::UM_Unspecified);
+  linkRx = linkTx = false;
+}
+
+static void saveHw() {
+  if (!requestJSONBufferLock(JSON_LOCK_HELD)) { hwNeedsSave = true; return; }
+  JsonObject root = pDoc->to<JsonObject>();
+  root[F("linkRx")] = linkRxPin;
+  root[F("linkTx")] = linkTxPin;
+  root[F("linkBaud")] = linkBaud;
+  File f = WLED_FS.open(FPSTR(HELD_HW_FILE), "w");
+  if (f) { serializeJson(root, f); f.close(); }
+  releaseJSONBufferLock();
+}
+
+static void loadHw() {
+  if (!WLED_FS.exists(FPSTR(HELD_HW_FILE))) return;
+  if (!requestJSONBufferLock(JSON_LOCK_HELD)) return;
+  File f = WLED_FS.open(FPSTR(HELD_HW_FILE), "r");
+  if (f) {
+    if (!deserializeJson(*pDoc, f)) {
+      JsonObject root = pDoc->as<JsonObject>();
+      linkRxPin = constrain((int)(root[F("linkRx")] | (int)linkRxPin), -1, WLED_NUM_PINS - 1);
+      linkTxPin = constrain((int)(root[F("linkTx")] | (int)linkTxPin), -1, WLED_NUM_PINS - 1);
+      linkBaud = constrain((uint32_t)(root[F("linkBaud")] | linkBaud), LINK_BAUD_MIN, LINK_BAUD_MAX);
+    }
+    f.close();
+  }
+  releaseJSONBufferLock();
+}
+
+// pin changes requested over JSON, saving, and retrying pins that were busy
+static void linkMaintain() {
+  if (linkReconfig) {
+    linkReconfig = false;
+    linkTeardown();
+    linkRxPin = newRxPin;
+    linkTxPin = newTxPin;
+    linkBaud = newBaud;
+    linkSetup();
+    hwNeedsSave = true;
+  }
+  if (hwNeedsSave) {
+    hwNeedsSave = false;
+    saveHw();
+  }
+  if (!linkRx && linkRxPin >= 0 && millis() - lastLinkRetry > LINK_RETRY_INTERVAL) {
+    lastLinkRetry = millis();
+    linkSetup();
   }
 }
 
@@ -419,12 +509,14 @@ void heldSetup() {
   DEBUG_PRINTF_P(PSTR("Held: effect id %u\n"), fxId);
   loadConfig();
   heldInputSetup();
+  loadHw();
   linkSetup();
   checkSegments();
 }
 
 void heldLoop() {
   heldInputLoop();
+  linkMaintain();
   linkLoop();
   if (needsSave) {
     needsSave = false;
