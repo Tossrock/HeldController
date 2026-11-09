@@ -157,7 +157,7 @@ On a device, the same section shows the link status. Lines typed there are handl
 
 ## Hardware configuration
 
-On a device, **Strip config → Hardware** sets the LED outputs and the audio link pins, without rebuilding the firmware.
+On a device, **Strip config → Hardware** sets the LED outputs and the audio link pins, without rebuilding the firmware. In the simulator the section is shown greyed out as a read-only preview.
 
 - **LED outputs.** This is WLED's own LED configuration in a simpler form. For each output you set:
   - the strip type, from the digital types this build supports (for example WS281x, SK6812 RGBW, TM1814, APA102, WS2801);

@@ -574,9 +574,10 @@
 			row.appendChild(rem);
 		}
 		p.appendChild(row);
+		renderHardware(p);
 	}
 
-	// ------------------------------------------------------------------ hardware (device only)
+	// ------------------------------------------------------------------ hardware (editable on a device; read-only preview in the simulator)
 	// LED outputs are WLED's own bus config: read from /json/cfg, edited here, and posted back as
 	// the whole "hw" object (WLED rebuilds the outputs live and saves cfg.json). Audio link pins go
 	// to /json/held {"hw": ...} and are kept in /held_hw.json on the device.
@@ -600,6 +601,7 @@
 	function pinSelect(cur, output, allowNone, onChange) {
 		const sel = el('select');
 		if (allowNone) sel.add(new Option('none', '-1'));
+		else if (cur < 0) sel.add(new Option('—', '-1'));
 		const lk = (app.devState && app.devState.link) || {};
 		const pins = (app.hwPins || []).slice();
 		if (cur >= 0 && !pins.some((q) => q.p === cur)) pins.push({ p: cur, c: 0 });
@@ -626,9 +628,20 @@
 		return r;
 	}
 
-	function renderHardware(p) {
+	function renderHardware(outer) {
+		const preview = app.device === null;
+		if (preview) {
+			outer.appendChild(el('h4', '', 'Hardware'));
+			outer.appendChild(el('p', 'lhelp', 'Preview. On a controller this section sets each LED output\'s strip type, data pin (plus a clock pin for 4-wire strips), LED count and color order, and the audio link\'s pins and baud rate. Connect in Setup → Connection to edit them.'));
+		}
+		const p = el('div', preview ? 'hwPreview' : '');
+		outer.appendChild(p);
+		if (preview) p.setAttribute('aria-disabled', 'true');
+		const outputs = preview
+			? app.strips.map((st) => ({ type: 22, pins: [-1], len: st.leds, order: 0, orderHi: 0, rev: false }))
+			: app.hwOutputs;
 		p.appendChild(el('h4', '', 'Hardware: LED outputs'));
-		if (!app.hwCfg) {
+		if (!preview && !app.hwCfg) {
 			p.appendChild(el('p', 'lhelp', 'Loading the device\'s LED configuration…'));
 			if (!app.hwLoading) {
 				app.hwLoading = true;
@@ -638,7 +651,7 @@
 		}
 		p.appendChild(el('p', 'lhelp', 'Each output is one data line (plus a clock line for 4-wire strips such as APA102) and becomes one Held strip. Changes apply when you press Apply: the LEDs restart and the device saves them.'));
 		const mark = () => { app.hwDirty = true; applyBtn.classList.add('dirty'); };
-		app.hwOutputs.forEach((o, i) => {
+		outputs.forEach((o, i) => {
 			const card = el('div', 'stripCard');
 			card.appendChild(el('h4', '', 'Output ' + (i + 1)));
 			const type = el('select');
@@ -665,20 +678,20 @@
 			rev.type = 'checkbox'; rev.checked = o.rev;
 			rev.onchange = () => { o.rev = rev.checked; mark(); };
 			card.appendChild(hwRow('Reversed', rev));
-			if (app.hwOutputs.length > 1) {
+			if (outputs.length > 1) {
 				const rm = el('button', 'link', 'remove output');
-				rm.onclick = () => { app.hwOutputs.splice(i, 1); mark(); renderPanel(); };
+				rm.onclick = () => { outputs.splice(i, 1); mark(); renderPanel(); };
 				card.appendChild(rm);
 			}
 			p.appendChild(card);
 		});
 		const row = el('div', 'row');
 		const add = el('button', '', '+ Add output');
-		add.disabled = app.hwOutputs.length >= MAX_STRIPS;
+		add.disabled = outputs.length >= MAX_STRIPS;
 		add.onclick = () => {
-			const used = new Set(app.hwOutputs.flatMap((o) => o.pins));
+			const used = new Set(outputs.flatMap((o) => o.pins));
 			const free = (app.hwPins || []).find((q) => !q.a && !(q.c & (PIN_INPUT_ONLY | PIN_BOOT)) && !used.has(q.p));
-			app.hwOutputs.push({ type: 22, pins: [free ? free.p : -1], len: 60, order: 0, orderHi: 0, rev: false, src: null });
+			outputs.push({ type: 22, pins: [free ? free.p : -1], len: 60, order: 0, orderHi: 0, rev: false, src: null });
 			mark();
 			renderPanel();
 		};
@@ -713,7 +726,7 @@
 		const la = el('button', 'accent', 'Apply audio link');
 		la.onclick = async () => {
 			if (cfg.rx >= 0 && cfg.rx === cfg.tx) { toast('RX and TX must be different pins'); return; }
-			const clash = app.hwOutputs.some((o) => o.pins.includes(cfg.rx) || (cfg.tx >= 0 && o.pins.includes(cfg.tx)));
+			const clash = outputs.some((o) => o.pins.includes(cfg.rx) || (cfg.tx >= 0 && o.pins.includes(cfg.tx)));
 			if (clash && !confirm('That pin is also used by an LED output. Use it anyway?')) return;
 			await send({ hw: { linkRx: cfg.rx, linkTx: cfg.tx, linkBaud: cfg.baud } });
 			setTimeout(async () => {
@@ -726,6 +739,7 @@
 			}, 800);
 		};
 		p.appendChild(la);
+		if (preview) p.querySelectorAll('select, input, button').forEach((c) => { c.disabled = true; });
 	}
 
 	async function applyLedOutputs() {
